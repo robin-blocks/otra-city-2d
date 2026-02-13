@@ -25,8 +25,9 @@ COPY client/ client/
 # Build: shared -> server -> client (tools not needed for production)
 RUN npm run build --workspace=shared && npm run build --workspace=server && npm run build --workspace=client
 
-# Copy static files that TypeScript doesn't handle
-RUN cp -r server/src/static server/dist/static
+# Copy non-TypeScript assets that tsc doesn't handle
+RUN cp -r server/src/static server/dist/static && \
+    cp server/src/db/schema.sql server/dist/db/schema.sql
 
 # Stage 2: Production runtime
 FROM node:20-slim
