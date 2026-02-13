@@ -1,0 +1,3 @@
+otra.city {
+    reverse_proxy app:3456
+}

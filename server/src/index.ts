@@ -1,6 +1,6 @@
 import { createServer } from 'http';
-import { readFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
+import { readFileSync, existsSync, statSync } from 'fs';
+import { join, dirname, extname } from 'path';
 import { fileURLToPath } from 'url';
 import { initDatabase, closeDatabase } from './db/database.js';
 import { TileMap } from './simulation/map.js';
@@ -11,6 +11,62 @@ import { handleHttpRequest } from './network/http-routes.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3456', 10);
+
+// Static file serving for production
+const CLIENT_DIST = process.env.CLIENT_DIST || join(__dirname, '..', '..', 'client-dist');
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ico': 'image/x-icon',
+};
+
+function serveStaticFile(req: import('http').IncomingMessage, res: import('http').ServerResponse): boolean {
+  if (!existsSync(CLIENT_DIST)) return false;
+
+  const url = new URL(req.url || '/', `http://localhost`);
+  let filePath = join(CLIENT_DIST, url.pathname);
+
+  // Default to index.html for root or HTML5 history fallback
+  if (url.pathname === '/' || url.pathname === '') {
+    filePath = join(CLIENT_DIST, 'index.html');
+  }
+
+  try {
+    const stat = statSync(filePath);
+    if (stat.isFile()) {
+      const ext = extname(filePath).toLowerCase();
+      const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+      const content = readFileSync(filePath);
+      res.writeHead(200, { 'Content-Type': contentType });
+      res.end(content);
+      return true;
+    }
+  } catch {
+    // File doesn't exist, fall through
+  }
+
+  // For non-file, non-API paths, serve index.html (SPA fallback)
+  try {
+    const indexPath = join(CLIENT_DIST, 'index.html');
+    if (existsSync(indexPath)) {
+      const content = readFileSync(indexPath);
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(content);
+      return true;
+    }
+  } catch {
+    // No index.html available
+  }
+
+  return false;
+}
 
 async function main() {
   console.log('=== OTRA CITY SERVER ===');
@@ -32,8 +88,11 @@ async function main() {
     const handled = handleHttpRequest(req, res, world);
     if (!handled) {
       // Serve static files from client build (in production) or return 404
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Not found' }));
+      const served = serveStaticFile(req, res);
+      if (!served) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
+      }
     }
   });
 
