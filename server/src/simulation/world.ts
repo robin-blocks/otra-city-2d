@@ -126,12 +126,14 @@ export class World {
       const newX = r.x + r.velocityX * dt;
       const newY = r.y + r.velocityY * dt;
 
+      const fromX = r.x;
+      const fromY = r.y;
       const result = resolveMovement(this.map, r.x, r.y, newX, newY);
       r.x = result.x;
       r.y = result.y;
 
-      // If fully blocked, stop
-      if (result.blocked && result.x === r.x && result.y === r.y) {
+      // If fully blocked (didn't move at all), stop velocity
+      if (result.blocked && result.x === fromX && result.y === fromY) {
         r.velocityX = 0;
         r.velocityY = 0;
         r.speed = 'stop';
