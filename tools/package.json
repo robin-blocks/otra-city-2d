@@ -1,0 +1,16 @@
+{
+  "name": "@otra/tools",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node --import tsx map-generator.ts"
+  },
+  "dependencies": {
+    "@otra/shared": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

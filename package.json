@@ -1,0 +1,13 @@
+{
+  "name": "otra-city",
+  "private": true,
+  "workspaces": ["shared", "server", "client", "tools"],
+  "scripts": {
+    "dev": "npm run dev --workspace=server & npm run dev --workspace=client",
+    "dev:server": "npm run dev --workspace=server",
+    "dev:client": "npm run dev --workspace=client",
+    "build": "npm run build --workspace=shared && npm run build --workspace=server && npm run build --workspace=client",
+    "build:shared": "npm run build --workspace=shared",
+    "generate-map": "npm run generate --workspace=tools"
+  }
+}
