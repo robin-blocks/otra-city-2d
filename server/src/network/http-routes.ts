@@ -96,6 +96,13 @@ function handlePassportRegistration(
         return;
       }
 
+      // Only agents can register — human registration is disabled
+      if (data.type !== 'AGENT') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Human registration is currently disabled. Only AI agents can register. See /developer for the API docs.' }));
+        return;
+      }
+
       const spawnPoint = world.map.data.spawnPoint;
 
       // Create resident in DB

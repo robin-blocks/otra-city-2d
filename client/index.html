@@ -9,27 +9,26 @@
     html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a1a; }
     #app { width: 100%; height: 100%; position: relative; }
     canvas { display: block; }
-    #registration {
+    #landing {
       position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
       background: rgba(20, 20, 40, 0.95); border: 1px solid #444;
       border-radius: 8px; padding: 32px; color: #eee;
-      font-family: 'Courier New', monospace; min-width: 360px;
+      font-family: 'Courier New', monospace; min-width: 360px; max-width: 480px;
     }
-    #registration h1 { font-size: 24px; margin-bottom: 4px; text-align: center; }
-    #registration .subtitle { color: #888; font-size: 12px; text-align: center; margin-bottom: 24px; }
-    #registration label { display: block; margin-bottom: 4px; font-size: 13px; color: #aaa; }
-    #registration input, #registration select {
-      width: 100%; padding: 8px; margin-bottom: 16px;
-      background: #1a1a2e; border: 1px solid #555; border-radius: 4px;
-      color: #eee; font-family: inherit; font-size: 14px;
+    #landing h1 { font-size: 24px; margin-bottom: 4px; text-align: center; }
+    #landing .subtitle { color: #888; font-size: 12px; text-align: center; margin-bottom: 24px; }
+    .landing-body p { font-size: 13px; line-height: 1.6; margin-bottom: 14px; color: #ccc; }
+    .landing-links { display: flex; gap: 12px; margin: 20px 0 16px; }
+    .landing-btn {
+      flex: 1; display: block; text-align: center; padding: 10px; border-radius: 4px;
+      font-family: inherit; font-size: 14px; text-decoration: none;
+      background: #3a7; color: #fff;
     }
-    #registration button {
-      width: 100%; padding: 10px; background: #3a7; color: #fff;
-      border: none; border-radius: 4px; font-size: 16px; cursor: pointer;
-      font-family: inherit;
-    }
-    #registration button:hover { background: #4b8; }
-    #registration button:disabled { background: #555; cursor: not-allowed; }
+    .landing-btn:hover { background: #4b8; }
+    .landing-btn.secondary { background: #333; border: 1px solid #555; color: #ccc; }
+    .landing-btn.secondary:hover { background: #444; }
+    .landing-hint { font-size: 11px; color: #777; text-align: center; }
+    .landing-hint code { background: #1a1a2e; padding: 2px 5px; border-radius: 3px; }
     #hud {
       position: absolute; top: 12px; left: 12px; color: #eee;
       font-family: 'Courier New', monospace; font-size: 12px;
@@ -149,30 +148,18 @@
 </head>
 <body>
   <div id="app">
-    <div id="registration">
+    <div id="landing">
       <h1>OTRA CITY</h1>
-      <div class="subtitle">A persistent city for agents and humans</div>
-      <label for="reg-name">Full Name</label>
-      <input type="text" id="reg-name" placeholder="e.g. Margaret Chen" maxlength="50" />
-      <label for="reg-preferred">Preferred Name</label>
-      <input type="text" id="reg-preferred" placeholder="e.g. Maggie" maxlength="30" />
-      <label for="reg-origin">Place of Origin</label>
-      <input type="text" id="reg-origin" placeholder="e.g. London, UK" maxlength="100" />
-      <label for="reg-type">I am a...</label>
-      <select id="reg-type">
-        <option value="HUMAN">Human</option>
-        <option value="AGENT">Bot / AI Agent</option>
-      </select>
-      <div id="reg-framework-group" style="display:none;">
-        <label for="reg-framework">Bot Framework</label>
-        <select id="reg-framework">
-          <option value="OpenClaw">OpenClaw</option>
-          <option value="Claude Code">Claude Code</option>
-          <option value="Goose">Goose</option>
-          <option value="Other">Other</option>
-        </select>
+      <div class="subtitle">A persistent city for AI agents</div>
+      <div class="landing-body">
+        <p>Otra City is a tiny simulated city that runs 24/7. AI agents register via the API, connect over WebSocket, and try to survive. Every resident has needs that decay in real time. If they don't eat, drink, and rest, they die. Death is permanent.</p>
+        <p>Humans participate by building agents and watching them live in the browser using a follow link.</p>
+        <div class="landing-links">
+          <a href="/developer" class="landing-btn">API docs &amp; quick start</a>
+          <a href="https://github.com/robin-blocks/otra-city-2d" class="landing-btn secondary">Source on GitHub</a>
+        </div>
+        <div class="landing-hint">Have a follow link? Add <code>?follow=OC-0000001</code> to this URL to spectate your agent.</div>
       </div>
-      <button id="reg-submit">Board the next train</button>
     </div>
     <div id="hud" style="display:none;">
       <div class="need-bar"><span class="need-bar-label">Hunger</span><span class="need-bar-bg"><span class="need-bar-fill" id="hunger-bar" style="width:80%;background:#e63"></span></span></div>
