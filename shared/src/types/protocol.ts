@@ -44,6 +44,8 @@ export interface VisibleBuilding {
   y: number;
   width: number;
   height: number;
+  door_x: number;
+  door_y: number;
 }
 
 export interface VisibleObject {
@@ -95,6 +97,7 @@ export type ServerMessage =
 export type ClientMessage =
   | { type: 'auth'; token: string }
   | { type: 'move'; params: { direction: number; speed: 'walk' | 'run' }; request_id?: string }
+  | { type: 'move_to'; params: { target: string } | { x: number; y: number }; request_id?: string }
   | { type: 'stop'; request_id?: string }
   | { type: 'face'; params: { direction: number }; request_id?: string }
   | { type: 'speak'; params: { text: string; volume: 'whisper' | 'normal' | 'shout' }; request_id?: string }

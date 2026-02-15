@@ -4,12 +4,13 @@ import type { Server } from 'http';
 import { verifyToken } from '../auth/jwt.js';
 import type { World, ResidentEntity } from '../simulation/world.js';
 import type { ClientMessage, ServerMessage } from '@otra/shared';
-import { WALK_SPEED, RUN_SPEED, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR } from '@otra/shared';
+import { WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR } from '@otra/shared';
 import { logEvent, getResident, getRecentEventsForResident } from '../db/queries.js';
 import { buyItem, SHOP_CATALOG } from '../economy/shop.js';
 import { collectUbi } from '../economy/ubi.js';
 import { consumeItem } from '../economy/consume.js';
 import { enterBuilding, exitBuilding, useToilet } from '../buildings/building-actions.js';
+import { findPath } from '../simulation/pathfinding.js';
 
 export class WsServer {
   private wss: WebSocketServer;
@@ -239,6 +240,11 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'exhausted');
           return;
         }
+        // Cancel active pathfinding
+        resident.pathWaypoints = null;
+        resident.pathTargetBuilding = null;
+        resident.pathBlockedTicks = 0;
+
         const dirRad = ((msg.params?.direction ?? 0) * Math.PI) / 180;
         const speed = msg.params?.speed === 'run' ? RUN_SPEED : WALK_SPEED;
         resident.velocityX = Math.cos(dirRad) * speed;
@@ -250,6 +256,11 @@ export class WsServer {
       }
 
       case 'stop': {
+        // Cancel active pathfinding
+        resident.pathWaypoints = null;
+        resident.pathTargetBuilding = null;
+        resident.pathBlockedTicks = 0;
+
         resident.velocityX = 0;
         resident.velocityY = 0;
         resident.speed = 'stop';
@@ -261,6 +272,82 @@ export class WsServer {
         if (!resident.isSleeping) {
           resident.facing = msg.params?.direction ?? resident.facing;
         }
+        this.sendActionResult(resident, msg, true);
+        break;
+      }
+
+      case 'move_to': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        if (resident.needs.energy <= 0) {
+          this.sendActionResult(resident, msg, false, 'exhausted');
+          return;
+        }
+
+        // If inside a building, auto-exit first
+        if (resident.currentBuilding) {
+          const exitResult = exitBuilding(resident, this.world);
+          if (!exitResult.success) {
+            this.sendActionResult(resident, msg, false, `Cannot exit building: ${exitResult.message}`);
+            return;
+          }
+        }
+
+        // Resolve target coordinates
+        let targetX: number;
+        let targetY: number;
+        let targetBuildingId: string | null = null;
+        const params = msg.params as { target?: string; x?: number; y?: number } | undefined;
+
+        if (params && 'target' in params && typeof params.target === 'string') {
+          // Building target — resolve to door approach tile
+          const building = this.world.map.data.buildings.find(b => b.id === params.target);
+          if (!building) {
+            this.sendActionResult(resident, msg, false, 'building_not_found');
+            return;
+          }
+          if (building.doors.length === 0) {
+            this.sendActionResult(resident, msg, false, 'building_has_no_door');
+            return;
+          }
+          const door = building.doors[0];
+          // Approach tile: one tile in front of door based on facing direction
+          const approachOffsets: Record<string, { dx: number; dy: number }> = {
+            north: { dx: 0, dy: -1 },
+            south: { dx: 0, dy: 1 },
+            east: { dx: 1, dy: 0 },
+            west: { dx: -1, dy: 0 },
+          };
+          const offset = approachOffsets[door.facing] || { dx: 0, dy: 1 };
+          targetX = (door.tileX + offset.dx) * TILE_SIZE + TILE_SIZE / 2;
+          targetY = (door.tileY + offset.dy) * TILE_SIZE + TILE_SIZE / 2;
+          targetBuildingId = building.id;
+        } else if (params && typeof params.x === 'number' && typeof params.y === 'number') {
+          targetX = params.x;
+          targetY = params.y;
+        } else {
+          this.sendActionResult(resident, msg, false, 'missing_target');
+          return;
+        }
+
+        // Compute A* path
+        const path = findPath(this.world.map, resident.x, resident.y, targetX, targetY);
+        if (!path) {
+          this.sendActionResult(resident, msg, false, 'no_path_found');
+          return;
+        }
+
+        // Set path state on resident
+        resident.pathWaypoints = path;
+        resident.pathIndex = 0;
+        resident.pathTargetBuilding = targetBuildingId;
+        resident.pathBlockedTicks = 0;
+
+        logEvent('move_to', resident.id, null, targetBuildingId, resident.x, resident.y, {
+          target_x: targetX, target_y: targetY, waypoint_count: path.length,
+        });
         this.sendActionResult(resident, msg, true);
         break;
       }
@@ -297,6 +384,11 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'not_tired');
           return;
         }
+        // Cancel active pathfinding
+        resident.pathWaypoints = null;
+        resident.pathTargetBuilding = null;
+        resident.pathBlockedTicks = 0;
+
         resident.isSleeping = true;
         resident.velocityX = 0;
         resident.velocityY = 0;

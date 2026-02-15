@@ -66,6 +66,7 @@ export class GameLoop {
       this.tick++;
       this.onPerceptionTick(this.tick);
       this.world.clearPendingSpeech();
+      this.world.clearPendingNotifications();
       this.perceptionAccumulator -= this.PERC_STEP;
     }
 

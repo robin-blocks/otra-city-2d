@@ -4,6 +4,7 @@ import {
   HUNGER_DECAY_PER_SEC, THIRST_DECAY_PER_SEC, ENERGY_PASSIVE_DECAY_PER_SEC,
   BLADDER_FILL_PER_SEC, HEALTH_DRAIN_HUNGER, HEALTH_DRAIN_THIRST,
   HEALTH_RECOVERY_PER_SEC, HEALTH_RECOVERY_THRESHOLD,
+  SLEEP_ROUGH_RATE_PER_SEC, SLEEP_BAG_RATE_PER_SEC,
   TRAIN_INTERVAL_SEC, STARTING_QUID, FOV_ANGLE, FOV_RANGE, AMBIENT_RANGE,
   NORMAL_VOICE_RANGE, WHISPER_RANGE, SHOUT_RANGE, WALL_SOUND_FACTOR,
   TIME_SCALE, STARTING_HOUR, GAME_DAY_SECONDS,
@@ -17,6 +18,7 @@ import {
   getWorldState, markResidentDead, logEvent, getInventory, batchSaveInventory,
 } from '../db/queries.js';
 import type { PerceptionUpdate, AudibleMessage, VisibleEntity, VisibleBuilding } from '@otra/shared';
+import { enterBuilding } from '../buildings/building-actions.js';
 
 export interface ResidentEntity {
   id: string;
@@ -48,6 +50,13 @@ export interface ResidentEntity {
   lastActionTime: number;
   // Speech tracking for perception
   pendingSpeech: Array<{ text: string; volume: 'whisper' | 'normal' | 'shout'; time: number }>;
+  // Pathfinding state
+  pathWaypoints: Array<{ x: number; y: number }> | null;
+  pathIndex: number;
+  pathTargetBuilding: string | null;
+  pathBlockedTicks: number;
+  // Notifications for perception
+  pendingNotifications: string[];
 }
 
 export class World {
@@ -112,6 +121,11 @@ export class World {
       ws: null,
       lastActionTime: 0,
       pendingSpeech: [],
+      pathWaypoints: null,
+      pathIndex: 0,
+      pathTargetBuilding: null,
+      pathBlockedTicks: 0,
+      pendingNotifications: [],
     };
     this.residents.set(row.id, entity);
     return entity;
@@ -119,6 +133,63 @@ export class World {
 
   /** Position updates — called at 30 Hz */
   updatePositions(dt: number): void {
+    // Path-following pre-pass: steer residents along active paths
+    for (const [, r] of this.residents) {
+      if (r.isDead || r.isSleeping || !r.pathWaypoints) continue;
+
+      // Cancel path if out of energy
+      if (r.needs.energy <= 0) {
+        r.pathWaypoints = null;
+        r.pathTargetBuilding = null;
+        r.pathBlockedTicks = 0;
+        r.velocityX = 0;
+        r.velocityY = 0;
+        r.speed = 'stop';
+        r.pendingNotifications.push('Path cancelled: exhausted.');
+        continue;
+      }
+
+      const wp = r.pathWaypoints[r.pathIndex];
+      const dx = wp.x - r.x;
+      const dy = wp.y - r.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < 16) {
+        // Reached current waypoint — advance
+        r.pathIndex++;
+        if (r.pathIndex >= r.pathWaypoints.length) {
+          // Path complete
+          r.velocityX = 0;
+          r.velocityY = 0;
+          r.speed = 'stop';
+          const targetBld = r.pathTargetBuilding;
+          r.pathWaypoints = null;
+          r.pathTargetBuilding = null;
+          r.pathBlockedTicks = 0;
+
+          // Auto-enter building if targeted
+          if (targetBld) {
+            const result = enterBuilding(r, targetBld, this);
+            if (result.success) {
+              r.pendingNotifications.push(`Arrived and entered ${result.message.replace('Entered ', '')}.`);
+            } else {
+              r.pendingNotifications.push(`Arrived but could not enter: ${result.message}`);
+            }
+          } else {
+            r.pendingNotifications.push('Arrived at destination.');
+          }
+          continue;
+        }
+      }
+
+      // Steer toward current waypoint
+      const angle = Math.atan2(dy, dx);
+      r.velocityX = Math.cos(angle) * WALK_SPEED;
+      r.velocityY = Math.sin(angle) * WALK_SPEED;
+      r.speed = 'walk';
+      r.facing = ((angle * 180) / Math.PI + 360) % 360;
+    }
+
     for (const [, r] of this.residents) {
       if (r.isDead || r.isSleeping) continue;
       if (r.velocityX === 0 && r.velocityY === 0) continue;
@@ -137,6 +208,19 @@ export class World {
         r.velocityX = 0;
         r.velocityY = 0;
         r.speed = 'stop';
+
+        // Cancel path if blocked for too long (30 ticks = ~1 second)
+        if (r.pathWaypoints) {
+          r.pathBlockedTicks++;
+          if (r.pathBlockedTicks >= 30) {
+            r.pathWaypoints = null;
+            r.pathTargetBuilding = null;
+            r.pathBlockedTicks = 0;
+            r.pendingNotifications.push('Path cancelled: blocked.');
+          }
+        }
+      } else if (r.pathWaypoints) {
+        r.pathBlockedTicks = 0;
       }
     }
   }
@@ -159,7 +243,7 @@ export class World {
       if (r.isSleeping) {
         // Recovery rate depends on equipment (sleeping bag)
         const hasSleepingBag = r.inventory.some(i => i.type === 'sleeping_bag');
-        const recoveryRate = hasSleepingBag ? 10 / 3600 : 5 / 3600; // +10/hr with bag, +5/hr rough
+        const recoveryRate = hasSleepingBag ? SLEEP_BAG_RATE_PER_SEC : SLEEP_ROUGH_RATE_PER_SEC;
         r.needs.energy = Math.min(100, r.needs.energy + recoveryRate * dt);
 
         // Auto-wake at 100
@@ -182,13 +266,19 @@ export class World {
         }
       }
 
-      // Forced collapse at energy 0
+      // Forced collapse at energy 0 — auto-sleep to prevent permanent immobilization
       if (r.needs.energy <= 0 && !r.isSleeping) {
         r.needs.energy = 0;
         r.velocityX = 0;
         r.velocityY = 0;
         r.speed = 'stop';
-        // Don't force sleep, just immobilize
+        r.isSleeping = true;
+        // Cancel any active path
+        r.pathWaypoints = null;
+        r.pathTargetBuilding = null;
+        r.pathBlockedTicks = 0;
+        r.pendingNotifications.push('You collapsed from exhaustion and fell asleep.');
+        logEvent('collapse', r.id, null, null, r.x, r.y, {});
       }
 
       // Health damage from unmet needs
@@ -311,7 +401,7 @@ export class World {
     // Always available actions
     interactions.push('speak', 'inspect');
     if (!resident.isSleeping && resident.needs.energy > 0) {
-      interactions.push('move');
+      interactions.push('move', 'move_to');
     }
     if (resident.needs.energy < 90 && !resident.isSleeping) {
       interactions.push('sleep');
@@ -437,6 +527,7 @@ export class World {
       const dist = Math.sqrt(dx * dx + dy * dy);
 
       if (dist <= FOV_RANGE * 1.5) { // buildings visible at slightly longer range
+        const primaryDoor = building.doors[0];
         visible.push({
           id: building.id,
           type: 'building',
@@ -446,6 +537,8 @@ export class World {
           y: building.tileY * TILE_SIZE,
           width: building.widthTiles * TILE_SIZE,
           height: building.heightTiles * TILE_SIZE,
+          door_x: primaryDoor ? primaryDoor.tileX * TILE_SIZE + TILE_SIZE / 2 : building.tileX * TILE_SIZE,
+          door_y: primaryDoor ? primaryDoor.tileY * TILE_SIZE + TILE_SIZE / 2 : building.tileY * TILE_SIZE,
         } satisfies VisibleBuilding);
 
         // Check if near door for enter_building interaction
@@ -485,7 +578,7 @@ export class World {
       visible,
       audible,
       interactions: [...new Set(interactions)],
-      notifications: [],
+      notifications: [...resident.pendingNotifications],
     };
   }
 
@@ -493,6 +586,13 @@ export class World {
   clearPendingSpeech(): void {
     for (const [, r] of this.residents) {
       r.pendingSpeech = [];
+    }
+  }
+
+  /** Clear pending notifications after perception broadcast */
+  clearPendingNotifications(): void {
+    for (const [, r] of this.residents) {
+      r.pendingNotifications = [];
     }
   }
 
