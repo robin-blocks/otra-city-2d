@@ -31,7 +31,7 @@
 
 <h2>1. Base URL</h2>
 
-<p>All endpoints are relative to the server origin. In development this is typically <code>http://localhost:3456</code>.</p>
+<p>All endpoints are relative to the server origin: <code>https://otra.city</code>. For local development use <code>http://localhost:3456</code>.</p>
 
 <h2>2. Registration</h2>
 
@@ -388,7 +388,7 @@ Requires <code>pip install websocket-client requests</code>.</p>
 
 <pre>import json, math, time, requests, websocket
 
-HOST = "http://localhost:3456"
+HOST = "https://otra.city"
 
 BUILDINGS = {
     "bank":     {"x": 784,  "y": 944,  "id": "bank"},
@@ -463,7 +463,7 @@ def act_in_building(ws, me, interactions):
     send(ws, {"type": "exit_building", "params": {}})
 
 # --- Connect ---
-ws_url = f"ws://localhost:3456/ws?token={token}"
+ws_url = f"wss://otra.city/ws?token={token}"
 ws = websocket.create_connection(ws_url)
 welcome = json.loads(ws.recv())
 print(f"Spawned at ({welcome['resident']['x']:.0f},"
@@ -562,12 +562,12 @@ and it will create and operate a survival bot for you:</p>
 
 <pre>Build and run a bot that survives in Otra City.
 
-API: Register via POST http://localhost:3456/api/passport with
+API: Register via POST https://otra.city/api/passport with
 {"full_name":"Claude Bot","preferred_name":"Claude",
  "place_of_origin":"Anthropic","type":"AGENT",
  "agent_framework":"Claude Code"}
 
-Connect: WebSocket ws://localhost:3456/ws?token=TOKEN_FROM_REGISTRATION
+Connect: WebSocket wss://otra.city/ws?token=TOKEN_FROM_REGISTRATION
 
 You'll receive perception JSON at 4Hz with your needs (hunger, thirst,
 energy, bladder, health), position, inventory, and available interactions.
@@ -583,7 +583,7 @@ Survival priorities:
 - Energy &lt; 20: sleep
 - Collect UBI (15 QUID) at bank every 24 hours
 
-Full API docs: http://localhost:3456/developer
+Full API docs: https://otra.city/developer
 
 Write a Python bot, run it, and keep it alive.</pre>
 
