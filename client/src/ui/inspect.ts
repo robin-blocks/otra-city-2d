@@ -1,4 +1,4 @@
-import type { InspectData } from '@otra/shared';
+import type { InspectData, Passport, PerceptionUpdate } from '@otra/shared';
 
 const EVENT_LABELS: Record<string, string> = {
   speak: 'Spoke',
@@ -28,6 +28,37 @@ export class InspectUI {
     this.visible = true;
     this.overlay.style.display = 'block';
     this.render(data);
+  }
+
+  /** Show inspect panel from local data (for spectator self-inspect, no server roundtrip) */
+  showLocal(passport: Passport, self: PerceptionUpdate['self']): void {
+    this.visible = true;
+    this.overlay.style.display = 'block';
+
+    const statusColor = self.status === 'dead' ? '#c33' : '#3c6';
+    const statusLabel = self.status === 'dead' ? 'DECEASED' : 'ALIVE';
+
+    let html = `
+      <div class="inspect-header">
+        <div class="inspect-name">${this.escape(passport.full_name)}</div>
+        <div class="inspect-passport">${this.escape(passport.passport_no)}</div>
+      </div>
+      <div class="inspect-details">
+        <div class="inspect-row"><span class="inspect-label">Preferred name:</span> ${this.escape(passport.preferred_name)}</div>
+        <div class="inspect-row"><span class="inspect-label">Type:</span> ${passport.type === 'AGENT' ? 'Agent' : 'Human'}</div>
+        <div class="inspect-row"><span class="inspect-label">Status:</span> <span style="color:${statusColor}">${statusLabel}</span></div>
+      </div>
+      <div class="inspect-events-title">Current State</div>
+      <div class="inspect-events">
+        <div class="inspect-event">Hunger: ${self.hunger.toFixed(1)}</div>
+        <div class="inspect-event">Thirst: ${self.thirst.toFixed(1)}</div>
+        <div class="inspect-event">Energy: ${self.energy.toFixed(1)}</div>
+        <div class="inspect-event">Health: ${self.health.toFixed(1)}</div>
+        <div class="inspect-event">Location: ${self.current_building || 'Outside'}</div>
+        ${self.is_sleeping ? '<div class="inspect-event">💤 Sleeping</div>' : ''}
+      </div>
+    `;
+    this.overlay.innerHTML = html;
   }
 
   hide(): void {

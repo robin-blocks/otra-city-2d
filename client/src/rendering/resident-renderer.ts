@@ -38,6 +38,7 @@ export class ResidentRenderer {
   updateResidents(
     visible: VisibleResident[],
     selfId: string,
+    selfName: string,
     selfX: number,
     selfY: number,
     selfFacing: number,
@@ -49,7 +50,7 @@ export class ResidentRenderer {
 
     // Render self — snap directly to predicted position (no lerp needed)
     activeIds.add(selfId);
-    this.renderResident(selfId, 'You', selfX, selfY, selfFacing, selfAction,
+    this.renderResident(selfId, selfName, selfX, selfY, selfFacing, selfAction,
       selfSkinTone, 0, selfHairColor, false, true);
 
     // Render visible others — set target, interpolate smoothly
@@ -184,9 +185,7 @@ export class ResidentRenderer {
       rr.body.circle(fx, fy - 4, 2);
       rr.body.fill(0xffffff);
 
-      if (name !== 'You' || action !== 'sleeping') {
-        rr.nameTag.text = name;
-      }
+      rr.nameTag.text = name;
     }
   }
 }

@@ -1,5 +1,5 @@
 import { Application, Container } from 'pixi.js';
-import type { MapData, PerceptionUpdate, ResidentState, VisibleResident, AudibleMessage } from '@otra/shared';
+import type { MapData, PerceptionUpdate, ResidentState, VisibleResident, AudibleMessage, Passport, InventoryItem } from '@otra/shared';
 import { WALK_SPEED, RUN_SPEED, QUID_SYMBOL, GAME_DAY_SECONDS, TIME_SCALE } from '@otra/shared';
 import { WsClient } from '../network/ws-client.js';
 import { ActionSender } from '../network/action-sender.js';
@@ -30,6 +30,8 @@ export class Game {
 
   // State
   private selfId = '';
+  private selfName = '';
+  private selfPassport: Passport | null = null;
   private selfX = 0;
   private selfY = 0;
   private selfFacing = 0;
@@ -39,6 +41,13 @@ export class Game {
   private lastPerception: PerceptionUpdate | null = null;
   private mapLoaded = false;
   private spectatorMode = false;
+
+  // State-diff tracking for event feed
+  private prevSleeping = false;
+  private prevBuilding: string | null = null;
+  private prevWallet = 0;
+  private prevInventoryCount = 0;
+  private prevStatus = 'idle';
 
   // Client-side prediction
   private predictedX = 0;
@@ -89,9 +98,18 @@ export class Game {
 
     // Click-to-inspect residents
     this.residentRenderer.onResidentClick = (residentId: string) => {
-      if (residentId === this.selfId) return;
       if (this.input.uiOpen) return;
-      this.actions.inspect(residentId);
+      if (residentId === this.selfId) {
+        // Self-click: in spectator mode show local passport; in player mode use server inspect
+        if (this.spectatorMode) {
+          this.showLocalInspect();
+        } else {
+          this.actions.inspect(residentId);
+        }
+      } else if (!this.spectatorMode) {
+        // Other residents: only in player mode (spectators can't send messages)
+        this.actions.inspect(residentId);
+      }
     };
 
     // Input
@@ -154,6 +172,8 @@ export class Game {
         console.log(`[Game] Welcome! ${resident.passport.preferred_name} (${resident.passport.passport_no})`);
 
         this.selfId = resident.id;
+        this.selfName = resident.passport.preferred_name;
+        this.selfPassport = resident.passport;
         this.worldTime = worldTime;
         this.lastWorldTimeUpdate = performance.now();
         this.selfX = resident.x;
@@ -163,6 +183,13 @@ export class Game {
         this.selfFacing = resident.facing;
         this.selfSkinTone = resident.passport.skin_tone;
         this.selfHairColor = resident.passport.hair_color;
+
+        // Init state-diff tracking
+        this.prevSleeping = resident.is_sleeping;
+        this.prevBuilding = resident.current_building;
+        this.prevWallet = resident.wallet;
+        this.prevInventoryCount = resident.inventory.length;
+        this.prevStatus = resident.status;
 
         // Load map
         if (!this.mapLoaded) {
@@ -249,6 +276,9 @@ export class Game {
         for (const notif of data.notifications) {
           this.addEventFeedItem(notif);
         }
+
+        // State-diff event detection
+        this.detectStateChanges(data);
       };
 
       this.wsClient.onInspectResult = (data) => {
@@ -287,6 +317,8 @@ export class Game {
         console.log(`[Game] Spectating ${resident.passport.preferred_name} (${resident.passport.passport_no})`);
 
         this.selfId = resident.id;
+        this.selfName = resident.passport.preferred_name;
+        this.selfPassport = resident.passport;
         this.worldTime = worldTime;
         this.lastWorldTimeUpdate = performance.now();
         this.selfX = resident.x;
@@ -296,6 +328,17 @@ export class Game {
         this.selfFacing = resident.facing;
         this.selfSkinTone = resident.passport.skin_tone;
         this.selfHairColor = resident.passport.hair_color;
+
+        // Init state-diff tracking
+        this.prevSleeping = resident.is_sleeping;
+        this.prevBuilding = resident.current_building;
+        this.prevWallet = resident.wallet;
+        this.prevInventoryCount = resident.inventory.length;
+        this.prevStatus = resident.status;
+
+        // Show spectator inventory panel
+        const specInv = document.getElementById('spectator-inventory');
+        if (specInv) specInv.style.display = 'block';
 
         if (!this.mapLoaded) {
           try {
@@ -351,6 +394,12 @@ export class Game {
         for (const notif of data.notifications) {
           this.addEventFeedItem(notif);
         }
+
+        // State-diff event detection
+        this.detectStateChanges(data);
+
+        // Update spectator inventory panel
+        this.updateSpectatorInventory(data.self.inventory, data.self.wallet);
       };
 
       this.wsClient.onError = (_code: string, message: string) => {
@@ -391,7 +440,7 @@ export class Game {
       // Pass predicted position for self — this is instant
       this.residentRenderer.updateResidents(
         visibleResidents,
-        this.selfId, this.predictedX, this.predictedY,
+        this.selfId, this.selfName, this.predictedX, this.predictedY,
         this.selfFacing, this.selfAction,
         this.selfSkinTone, this.selfHairColor,
       );
@@ -424,6 +473,18 @@ export class Game {
     if (bladderBar) bladderBar.style.width = `${bladder}%`;
     if (healthBar) healthBar.style.width = `${health}%`;
     if (walletEl) walletEl.textContent = `${QUID_SYMBOL}${wallet}`;
+
+    // Update numeric values next to bars
+    const hungerVal = document.getElementById('hunger-val');
+    const thirstVal = document.getElementById('thirst-val');
+    const energyVal = document.getElementById('energy-val');
+    const bladderVal = document.getElementById('bladder-val');
+    const healthVal = document.getElementById('health-val');
+    if (hungerVal) hungerVal.textContent = hunger.toFixed(1);
+    if (thirstVal) thirstVal.textContent = thirst.toFixed(1);
+    if (energyVal) energyVal.textContent = energy.toFixed(1);
+    if (bladderVal) bladderVal.textContent = bladder.toFixed(1);
+    if (healthVal) healthVal.textContent = health.toFixed(1);
   }
 
   private handleHotkey(key: string): void {
@@ -546,6 +607,75 @@ export class Game {
     const dayEl = document.getElementById('clock-day');
     if (timeEl) timeEl.textContent = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
     if (dayEl) dayEl.textContent = `${dayOfMonth} ${Game.MONTH_NAMES[month]}`;
+  }
+
+  private detectStateChanges(data: PerceptionUpdate): void {
+    const self = data.self;
+
+    // Sleep state changes
+    if (self.is_sleeping && !this.prevSleeping) {
+      this.addEventFeedItem('Fell asleep');
+    } else if (!self.is_sleeping && this.prevSleeping) {
+      this.addEventFeedItem('Woke up');
+    }
+
+    // Building entry/exit
+    if (self.current_building && self.current_building !== this.prevBuilding) {
+      this.addEventFeedItem(`Entered ${self.current_building}`);
+    } else if (!self.current_building && this.prevBuilding) {
+      this.addEventFeedItem('Left building');
+    }
+
+    // Wallet changes
+    if (self.wallet !== this.prevWallet) {
+      const diff = self.wallet - this.prevWallet;
+      const sign = diff > 0 ? '+' : '';
+      this.addEventFeedItem(`Wallet: ${QUID_SYMBOL}${this.prevWallet} → ${QUID_SYMBOL}${self.wallet} (${sign}${diff})`);
+    }
+
+    // Inventory changes
+    const invCount = self.inventory.length;
+    if (invCount > this.prevInventoryCount) {
+      this.addEventFeedItem('Received an item');
+    } else if (invCount < this.prevInventoryCount) {
+      this.addEventFeedItem('Used an item');
+    }
+
+    // Death
+    if (self.status === 'dead' && this.prevStatus !== 'dead') {
+      this.addEventFeedItem('Died');
+    }
+
+    // Update previous state
+    this.prevSleeping = self.is_sleeping;
+    this.prevBuilding = self.current_building;
+    this.prevWallet = self.wallet;
+    this.prevInventoryCount = invCount;
+    this.prevStatus = self.status;
+  }
+
+  private showLocalInspect(): void {
+    if (!this.selfPassport || !this.lastPerception) return;
+    this.inspectUI.showLocal(this.selfPassport, this.lastPerception.self);
+    this.input.uiOpen = true;
+  }
+
+  private updateSpectatorInventory(
+    inventory: InventoryItem[],
+    wallet: number,
+  ): void {
+    const el = document.getElementById('spectator-inventory');
+    if (!el) return;
+
+    let html = `<div class="spec-inv-wallet">${QUID_SYMBOL}${wallet}</div>`;
+    if (inventory.length === 0) {
+      html += '<div class="spec-inv-empty">No items</div>';
+    } else {
+      for (const item of inventory) {
+        html += `<div class="spec-inv-item">${item.type} ×${item.quantity}</div>`;
+      }
+    }
+    el.innerHTML = html;
   }
 
   private addEventFeedItem(text: string): void {

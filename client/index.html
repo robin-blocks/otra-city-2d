@@ -38,6 +38,7 @@
     .need-bar-label { display: inline-block; width: 60px; }
     .need-bar-bg { display: inline-block; width: 120px; height: 10px; background: #333; border-radius: 2px; vertical-align: middle; }
     .need-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
+    .need-bar-val { display: inline-block; width: 40px; text-align: right; font-size: 11px; color: #999; vertical-align: middle; margin-left: 4px; }
     #wallet { margin-top: 8px; font-size: 14px; color: #fc0; }
     #chat-input-container {
       position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
@@ -136,6 +137,17 @@
     .inspect-event { font-size: 11px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
     .inspect-event-time { color: #666; margin-right: 8px; }
     .inspect-no-events { color: #666; text-align: center; padding: 12px; }
+    /* Spectator inventory panel */
+    #spectator-inventory {
+      position: absolute; bottom: 12px; left: 12px;
+      background: rgba(20, 20, 40, 0.85); border: 1px solid #444;
+      border-radius: 4px; padding: 8px 12px; color: #eee;
+      font-family: 'Courier New', monospace; font-size: 12px;
+      display: none; min-width: 140px; pointer-events: none;
+    }
+    .spec-inv-wallet { color: #fc0; font-size: 14px; margin-bottom: 6px; }
+    .spec-inv-item { font-size: 11px; margin-bottom: 2px; color: #ccc; }
+    .spec-inv-empty { font-size: 11px; color: #666; }
     /* Spectator banner */
     #spectator-banner {
       position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
@@ -162,11 +174,11 @@
       </div>
     </div>
     <div id="hud" style="display:none;">
-      <div class="need-bar"><span class="need-bar-label">Hunger</span><span class="need-bar-bg"><span class="need-bar-fill" id="hunger-bar" style="width:80%;background:#e63"></span></span></div>
-      <div class="need-bar"><span class="need-bar-label">Thirst</span><span class="need-bar-bg"><span class="need-bar-fill" id="thirst-bar" style="width:80%;background:#38e"></span></span></div>
-      <div class="need-bar"><span class="need-bar-label">Energy</span><span class="need-bar-bg"><span class="need-bar-fill" id="energy-bar" style="width:80%;background:#ec3"></span></span></div>
-      <div class="need-bar"><span class="need-bar-label">Bladder</span><span class="need-bar-bg"><span class="need-bar-fill" id="bladder-bar" style="width:20%;background:#a6e"></span></span></div>
-      <div class="need-bar"><span class="need-bar-label">Health</span><span class="need-bar-bg"><span class="need-bar-fill" id="health-bar" style="width:100%;background:#3c6"></span></span></div>
+      <div class="need-bar"><span class="need-bar-label">Hunger</span><span class="need-bar-bg"><span class="need-bar-fill" id="hunger-bar" style="width:80%;background:#e63"></span></span><span class="need-bar-val" id="hunger-val">80</span></div>
+      <div class="need-bar"><span class="need-bar-label">Thirst</span><span class="need-bar-bg"><span class="need-bar-fill" id="thirst-bar" style="width:80%;background:#38e"></span></span><span class="need-bar-val" id="thirst-val">80</span></div>
+      <div class="need-bar"><span class="need-bar-label">Energy</span><span class="need-bar-bg"><span class="need-bar-fill" id="energy-bar" style="width:80%;background:#ec3"></span></span><span class="need-bar-val" id="energy-val">80</span></div>
+      <div class="need-bar"><span class="need-bar-label">Bladder</span><span class="need-bar-bg"><span class="need-bar-fill" id="bladder-bar" style="width:20%;background:#a6e"></span></span><span class="need-bar-val" id="bladder-val">20</span></div>
+      <div class="need-bar"><span class="need-bar-label">Health</span><span class="need-bar-bg"><span class="need-bar-fill" id="health-bar" style="width:100%;background:#3c6"></span></span><span class="need-bar-val" id="health-val">100</span></div>
       <div id="wallet">Ɋ0</div>
     </div>
     <div id="chat-input-container">
@@ -185,6 +197,7 @@
       <div id="shop-wallet"></div>
     </div>
     <div id="inspect-overlay"></div>
+    <div id="spectator-inventory"></div>
     <div id="spectator-banner"></div>
     <div id="clock">
       <div class="clock-time" id="clock-time">06:00</div>
