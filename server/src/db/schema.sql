@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS residents (
     skin_tone INTEGER NOT NULL DEFAULT 0,
     distinguishing_feature TEXT DEFAULT '',
     agent_framework TEXT,
+    webhook_url TEXT,
     -- Auth
     api_key TEXT UNIQUE,
     -- Live state

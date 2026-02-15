@@ -11,6 +11,7 @@ import { collectUbi } from '../economy/ubi.js';
 import { consumeItem } from '../economy/consume.js';
 import { enterBuilding, exitBuilding, useToilet } from '../buildings/building-actions.js';
 import { findPath } from '../simulation/pathfinding.js';
+import { sendWebhook } from './webhooks.js';
 
 export class WsServer {
   private wss: WebSocketServer;
@@ -328,7 +329,8 @@ export class WsServer {
           targetX = params.x;
           targetY = params.y;
         } else {
-          this.sendActionResult(resident, msg, false, 'missing_target');
+          this.sendActionResult(resident, msg, false,
+            'invalid_params: move_to requires either {"target":"building-id"} or {"x":number,"y":number} in params');
           return;
         }
 
@@ -449,7 +451,12 @@ export class WsServer {
             item_type: itemType, quantity, cost: (SHOP_CATALOG.find(i => i.item_type === itemType)?.price ?? 0) * quantity,
           });
         }
-        this.sendActionResult(resident, msg, buyResult.success, buyResult.message);
+        this.sendActionResult(resident, msg, buyResult.success, buyResult.message,
+          buyResult.success ? {
+            item: buyResult.item,
+            wallet: resident.wallet,
+            inventory: resident.inventory,
+          } : undefined);
         break;
       }
 
@@ -464,7 +471,10 @@ export class WsServer {
             amount: ubiResult.amount, new_balance: ubiResult.newBalance,
           });
         }
-        this.sendActionResult(resident, msg, ubiResult.success, ubiResult.message);
+        this.sendActionResult(resident, msg, ubiResult.success, ubiResult.message,
+          ubiResult.success
+            ? { amount: ubiResult.amount, wallet: ubiResult.newBalance }
+            : { cooldown_remaining: ubiResult.cooldownRemaining });
         break;
       }
 
@@ -489,7 +499,8 @@ export class WsServer {
             item_id: eatItemId, effects: eatResult.effects,
           });
         }
-        this.sendActionResult(resident, msg, eatResult.success, eatResult.message);
+        this.sendActionResult(resident, msg, eatResult.success, eatResult.message,
+          eatResult.success ? { effects: eatResult.effects, inventory: resident.inventory } : undefined);
         break;
       }
 
@@ -505,7 +516,8 @@ export class WsServer {
             item_id: drinkItemId, effects: drinkResult.effects,
           });
         }
-        this.sendActionResult(resident, msg, drinkResult.success, drinkResult.message);
+        this.sendActionResult(resident, msg, drinkResult.success, drinkResult.message,
+          drinkResult.success ? { effects: drinkResult.effects, inventory: resident.inventory } : undefined);
         break;
       }
 
@@ -554,6 +566,78 @@ export class WsServer {
             },
           });
         }
+        break;
+      }
+
+      case 'trade': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        const tradeTargetId = msg.params?.target_id;
+        const offerQuid = msg.params?.offer_quid ?? 0;
+        const requestQuid = msg.params?.request_quid ?? 0;
+
+        if (!tradeTargetId) {
+          this.sendActionResult(resident, msg, false, 'missing_target_id');
+          return;
+        }
+        if (requestQuid !== 0) {
+          this.sendActionResult(resident, msg, false, 'request_quid must be 0 (requesting QUID from others is not yet supported)');
+          return;
+        }
+        if (offerQuid <= 0 || !Number.isInteger(offerQuid)) {
+          this.sendActionResult(resident, msg, false, 'offer_quid must be a positive integer');
+          return;
+        }
+        if (resident.wallet < offerQuid) {
+          this.sendActionResult(resident, msg, false, `Not enough QUID (need ${offerQuid}, have ${resident.wallet})`);
+          return;
+        }
+
+        const tradeTarget = this.world.residents.get(tradeTargetId);
+        if (!tradeTarget) {
+          this.sendActionResult(resident, msg, false, 'target_not_found');
+          return;
+        }
+        if (tradeTarget.isDead) {
+          this.sendActionResult(resident, msg, false, 'target_is_dead');
+          return;
+        }
+
+        // Must be nearby (within 100px)
+        const tdx = tradeTarget.x - resident.x;
+        const tdy = tradeTarget.y - resident.y;
+        const tradeDist = Math.sqrt(tdx * tdx + tdy * tdy);
+        if (tradeDist > 100) {
+          this.sendActionResult(resident, msg, false, 'target_too_far');
+          return;
+        }
+
+        // Execute transfer
+        resident.wallet -= offerQuid;
+        tradeTarget.wallet += offerQuid;
+
+        logEvent('trade', resident.id, tradeTargetId, null, resident.x, resident.y, {
+          offer_quid: offerQuid, sender_wallet: resident.wallet, receiver_wallet: tradeTarget.wallet,
+        });
+
+        // Notify sender
+        this.sendActionResult(resident, msg, true, `Gave ${offerQuid} QUID to ${tradeTarget.preferredName}`, {
+          offer_quid: offerQuid,
+          wallet: resident.wallet,
+          target_id: tradeTargetId,
+          target_name: tradeTarget.preferredName,
+        });
+
+        // Notify receiver via their pending notifications
+        tradeTarget.pendingNotifications.push(`Received ${offerQuid} QUID from ${resident.preferredName}.`);
+        sendWebhook(tradeTarget, 'trade_received', {
+          amount: offerQuid,
+          from_id: resident.id,
+          from_name: resident.preferredName,
+          wallet: tradeTarget.wallet,
+        });
         break;
       }
 
@@ -614,7 +698,8 @@ export class WsServer {
     resident: ResidentEntity,
     msg: ClientMessage,
     success: boolean,
-    reason?: string
+    reason?: string,
+    data?: Record<string, unknown>,
   ): void {
     if (!resident.ws) return;
     const requestId = ('request_id' in msg ? msg.request_id : undefined) || '';
@@ -623,6 +708,7 @@ export class WsServer {
       request_id: requestId,
       status: success ? 'ok' : 'error',
       reason: reason,
+      data: data,
     });
   }
 

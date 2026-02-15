@@ -53,8 +53,8 @@ export const ENERGY_COST_TRADE = 0.3;
 export const ENERGY_COST_COLLECT_BODY = 3.0;
 
 // === Sleep ===
-export const SLEEP_ROUGH_RATE_PER_SEC = 20 / 3600;    // +20 energy/hr (0→100 in ~5hrs)
-export const SLEEP_BAG_RATE_PER_SEC = 30 / 3600;      // +30 energy/hr (0→100 in ~3.3hrs)
+export const SLEEP_ROUGH_RATE_PER_SEC = 40 / 3600;    // +40 energy/real hr (0→100 in ~2.5 real hrs)
+export const SLEEP_BAG_RATE_PER_SEC = 60 / 3600;      // +60 energy/real hr (0→100 in ~1.7 real hrs)
 export const SLEEP_MAX_THRESHOLD = 90;                 // can't sleep above 90 energy
 
 // === Economy ===

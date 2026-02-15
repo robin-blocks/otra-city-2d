@@ -25,6 +25,9 @@ export function initDatabase(dbPath?: string): Database.Database {
   if (!colNames.has('agent_framework')) {
     db.exec("ALTER TABLE residents ADD COLUMN agent_framework TEXT");
   }
+  if (!colNames.has('webhook_url')) {
+    db.exec("ALTER TABLE residents ADD COLUMN webhook_url TEXT");
+  }
 
   console.log(`[DB] Initialized at ${path}`);
   return db;

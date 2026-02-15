@@ -113,6 +113,7 @@ function handlePassportRegistration(
         place_of_origin: data.place_of_origin,
         type: data.type || 'HUMAN',
         agent_framework: data.agent_framework,
+        webhook_url: data.webhook_url,
         height_cm: data.height_cm,
         build: data.build,
         hair_style: data.hair_style,

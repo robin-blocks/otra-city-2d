@@ -19,6 +19,7 @@ import {
 } from '../db/queries.js';
 import type { PerceptionUpdate, AudibleMessage, VisibleEntity, VisibleBuilding } from '@otra/shared';
 import { enterBuilding } from '../buildings/building-actions.js';
+import { sendWebhook } from '../network/webhooks.js';
 
 export interface ResidentEntity {
   id: string;
@@ -45,6 +46,8 @@ export interface ResidentEntity {
   hairStyle: number;
   hairColor: number;
   build: Build;
+  // Webhook
+  webhookUrl: string | null;
   // Runtime state
   ws: WebSocket | null;
   lastActionTime: number;
@@ -118,6 +121,7 @@ export class World {
       hairStyle: row.hair_style,
       hairColor: row.hair_color,
       build: row.build as Build,
+      webhookUrl: row.webhook_url ?? null,
       ws: null,
       lastActionTime: 0,
       pendingSpeech: [],
@@ -279,6 +283,7 @@ export class World {
         r.pathBlockedTicks = 0;
         r.pendingNotifications.push('You collapsed from exhaustion and fell asleep.');
         logEvent('collapse', r.id, null, null, r.x, r.y, {});
+        sendWebhook(r, 'collapse', { energy: 0, x: r.x, y: r.y });
       }
 
       // Health damage from unmet needs
@@ -287,6 +292,19 @@ export class World {
       }
       if (r.needs.thirst <= 0) {
         r.needs.health = Math.max(0, r.needs.health - HEALTH_DRAIN_THIRST * dt);
+      }
+
+      // Webhook alert when health drops below 50 (checked once per ~10 seconds to avoid spam)
+      if (r.needs.health > 0 && r.needs.health < 50 && (r.needs.hunger <= 0 || r.needs.thirst <= 0)) {
+        // Only send roughly every 100 ticks (10 seconds at 10Hz)
+        if (Math.random() < 0.01) {
+          sendWebhook(r, 'health_critical', {
+            health: Math.round(r.needs.health * 10) / 10,
+            hunger: Math.round(r.needs.hunger * 10) / 10,
+            thirst: Math.round(r.needs.thirst * 10) / 10,
+            energy: Math.round(r.needs.energy * 10) / 10,
+          });
+        }
       }
 
       // Health recovery when all needs above threshold
@@ -334,6 +352,7 @@ export class World {
 
         r.wallet = 0;
         console.log(`[World] ${r.preferredName} (${r.passportNo}) has died: ${cause}`);
+        sendWebhook(r, 'death', { cause, x: r.x, y: r.y });
       }
     }
   }

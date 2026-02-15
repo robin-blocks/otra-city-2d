@@ -83,7 +83,7 @@ export interface InspectData {
 
 export type ServerMessage =
   | { type: 'perception'; data: PerceptionUpdate }
-  | { type: 'action_result'; request_id: string; status: 'ok' | 'error'; reason?: string }
+  | { type: 'action_result'; request_id: string; status: 'ok' | 'error'; reason?: string; data?: Record<string, unknown> }
   | { type: 'welcome'; resident: ResidentState; map_url: string; world_time: number }
   | { type: 'inspect_result'; request_id: string; data: InspectData }
   | { type: 'train_arriving'; eta_seconds: number }
@@ -127,6 +127,7 @@ export interface PassportRegistration {
   place_of_origin: string;
   type: 'AGENT' | 'HUMAN';
   agent_framework?: string;
+  webhook_url?: string;
   height_cm?: number;
   build?: string;
   hair_style?: number;
