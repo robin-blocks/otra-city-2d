@@ -481,6 +481,70 @@ export class Game {
     this.mapRenderer.setTimeOfDay(currentTime);
   }
 
+  /**
+   * Interpolates a color from a gradient based on a value (0-100).
+   * Maps: 0 = red, 50 = yellow, 100 = green.
+   * @param value The current value (0-100).
+   * @param inverted If true, the gradient is reversed (0 = green, 100 = red).
+   * @returns A CSS hex color string (e.g., "#ff0000").
+   */
+  private getGradientColor(value: number, inverted: boolean = false): string {
+    if (inverted) {
+      value = 100 - value;
+    }
+
+    // Clamp the value between 0 and 100
+    value = Math.max(0, Math.min(100, value));
+
+    let r: number, g: number, b: number;
+
+    if (value > 50) {
+      // Yellow to Green (50 -> 100)
+      const t = (value - 50) / 50;
+      r = Math.round(255 * (1 - t));
+      g = Math.round(165 + 90 * t);
+      b = 0;
+    } else {
+      // Red to Yellow (0 -> 50)
+      const t = value / 50;
+      r = 255;
+      g = Math.round(255 * t);
+      b = 0;
+    }
+
+    const toHex = (c: number) => c.toString(16).padStart(2, '0');
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+  }
+
+  /**
+   * Returns a blue-tinted gradient color for the thirst bar.
+   * Maps: 0 = red/orange (dehydrated), 50 = light blue, 100 = deep blue (hydrated).
+   * @param value The current thirst value (0-100).
+   * @returns A CSS hex color string.
+   */
+  private getThirstColor(value: number): string {
+    value = Math.max(0, Math.min(100, value));
+
+    let r: number, g: number, b: number;
+
+    if (value > 50) {
+      // Light blue to deep blue (50 -> 100)
+      const t = (value - 50) / 50;
+      r = Math.round(100 * (1 - t) + 30 * t);
+      g = Math.round(180 * (1 - t) + 120 * t);
+      b = Math.round(220 + 35 * t);
+    } else {
+      // Red/orange to light blue (0 -> 50)
+      const t = value / 50;
+      r = Math.round(220 * (1 - t) + 100 * t);
+      g = Math.round(60 * (1 - t) + 180 * t);
+      b = Math.round(50 * (1 - t) + 220 * t);
+    }
+
+    const toHex = (c: number) => c.toString(16).padStart(2, '0');
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+  }
+
   private updateHud(
     hunger: number, thirst: number, energy: number,
     bladder: number, health: number, wallet: number,
@@ -492,11 +556,27 @@ export class Game {
     const healthBar = document.getElementById('health-bar');
     const walletEl = document.getElementById('wallet');
 
-    if (hungerBar) hungerBar.style.width = `${hunger}%`;
-    if (thirstBar) thirstBar.style.width = `${thirst}%`;
-    if (energyBar) energyBar.style.width = `${energy}%`;
-    if (bladderBar) bladderBar.style.width = `${bladder}%`;
-    if (healthBar) healthBar.style.width = `${health}%`;
+    if (hungerBar) {
+      hungerBar.style.width = `${hunger}%`;
+      hungerBar.style.backgroundColor = this.getGradientColor(hunger);
+    }
+    if (thirstBar) {
+      thirstBar.style.width = `${thirst}%`;
+      thirstBar.style.backgroundColor = this.getThirstColor(thirst);
+    }
+    if (energyBar) {
+      energyBar.style.width = `${energy}%`;
+      energyBar.style.backgroundColor = this.getGradientColor(energy);
+    }
+    if (bladderBar) {
+      bladderBar.style.width = `${bladder}%`;
+      // Inverted: 0 = healthy (green), 100 = desperate (red)
+      bladderBar.style.backgroundColor = this.getGradientColor(bladder, true);
+    }
+    if (healthBar) {
+      healthBar.style.width = `${health}%`;
+      healthBar.style.backgroundColor = this.getGradientColor(health);
+    }
     if (walletEl) walletEl.textContent = `${QUID_SYMBOL}${wallet}`;
 
     // Update numeric values next to bars
