@@ -63,6 +63,9 @@ export interface ResidentRow {
   is_sleeping: number;
   current_building: string | null;
   last_ubi_collection: number;
+  current_job_id: string | null;
+  shift_start_time: number | null;
+  carrying_body_id: string | null;
   created_at: number;
   death_time: number | null;
   death_cause: string | null;
@@ -201,13 +204,17 @@ export function batchSaveResidents(residents: Array<{
   id: string; x: number; y: number; facing: number;
   needs: Needs; wallet: number; is_sleeping: boolean;
   current_building: string | null;
+  current_job_id?: string | null;
+  shift_start_time?: number | null;
+  carrying_body_id?: string | null;
 }>): void {
   const db = getDb();
   const stmt = db.prepare(`
     UPDATE residents SET
       x = ?, y = ?, facing = ?,
       hunger = ?, thirst = ?, energy = ?, bladder = ?, health = ?,
-      wallet = ?, is_sleeping = ?, current_building = ?
+      wallet = ?, is_sleeping = ?, current_building = ?,
+      current_job_id = ?, shift_start_time = ?, carrying_body_id = ?
     WHERE id = ?
   `);
 
@@ -217,6 +224,7 @@ export function batchSaveResidents(residents: Array<{
         r.x, r.y, r.facing,
         r.needs.hunger, r.needs.thirst, r.needs.energy, r.needs.bladder, r.needs.health,
         r.wallet, r.is_sleeping ? 1 : 0, r.current_building,
+        r.current_job_id ?? null, r.shift_start_time ?? null, r.carrying_body_id ?? null,
         r.id
       );
     }
@@ -322,4 +330,128 @@ export function saveWorldState(worldTime: number, trainTimer: number): void {
   getDb().prepare(`
     UPDATE world_state SET world_time = ?, train_timer = ?, last_save = ? WHERE id = 1
   `).run(worldTime, trainTimer, Date.now());
+}
+
+// === Job queries ===
+
+export interface JobRow {
+  id: string;
+  title: string;
+  building_id: string | null;
+  wage_per_shift: number;
+  shift_duration_hours: number;
+  max_positions: number;
+  description: string;
+}
+
+export function getJobs(): JobRow[] {
+  return getDb().prepare('SELECT * FROM jobs').all() as JobRow[];
+}
+
+export function getJob(id: string): JobRow | undefined {
+  return getDb().prepare('SELECT * FROM jobs WHERE id = ?').get(id) as JobRow | undefined;
+}
+
+export function getJobHolderCount(jobId: string): number {
+  const row = getDb().prepare(
+    "SELECT COUNT(*) as count FROM residents WHERE current_job_id = ? AND status = 'ALIVE'"
+  ).get(jobId) as { count: number };
+  return row.count;
+}
+
+export function assignJob(residentId: string, jobId: string): void {
+  getDb().prepare(
+    'UPDATE residents SET current_job_id = ?, shift_start_time = NULL WHERE id = ?'
+  ).run(jobId, residentId);
+}
+
+export function clearJob(residentId: string): void {
+  getDb().prepare(
+    'UPDATE residents SET current_job_id = NULL, shift_start_time = NULL WHERE id = ?'
+  ).run(residentId);
+}
+
+// === Petition queries ===
+
+export interface PetitionRow {
+  id: string;
+  author_id: string;
+  category: string;
+  description: string;
+  status: string;
+  created_at: number;
+  closed_at: number | null;
+}
+
+export interface PetitionVoteRow {
+  petition_id: string;
+  resident_id: string;
+  vote: string;
+  timestamp: number;
+}
+
+export function createPetition(
+  id: string, authorId: string, category: string, description: string
+): PetitionRow {
+  const now = Date.now();
+  getDb().prepare(`
+    INSERT INTO petitions (id, author_id, category, description, status, created_at)
+    VALUES (?, ?, ?, ?, 'open', ?)
+  `).run(id, authorId, category, description, now);
+  return getDb().prepare('SELECT * FROM petitions WHERE id = ?').get(id) as PetitionRow;
+}
+
+export function votePetition(petitionId: string, residentId: string, vote: string): void {
+  getDb().prepare(`
+    INSERT OR REPLACE INTO petition_votes (petition_id, resident_id, vote, timestamp)
+    VALUES (?, ?, ?, ?)
+  `).run(petitionId, residentId, vote, Date.now());
+}
+
+export function getOpenPetitions(): Array<PetitionRow & { votes_for: number; votes_against: number }> {
+  return getDb().prepare(`
+    SELECT p.*,
+      COALESCE(SUM(CASE WHEN pv.vote = 'for' THEN 1 ELSE 0 END), 0) as votes_for,
+      COALESCE(SUM(CASE WHEN pv.vote = 'against' THEN 1 ELSE 0 END), 0) as votes_against
+    FROM petitions p
+    LEFT JOIN petition_votes pv ON p.id = pv.petition_id
+    WHERE p.status = 'open'
+    GROUP BY p.id
+    ORDER BY p.created_at DESC
+  `).all() as Array<PetitionRow & { votes_for: number; votes_against: number }>;
+}
+
+export function getPetition(id: string): PetitionRow | undefined {
+  return getDb().prepare('SELECT * FROM petitions WHERE id = ?').get(id) as PetitionRow | undefined;
+}
+
+export function hasVoted(petitionId: string, residentId: string): boolean {
+  const row = getDb().prepare(
+    'SELECT 1 FROM petition_votes WHERE petition_id = ? AND resident_id = ?'
+  ).get(petitionId, residentId);
+  return !!row;
+}
+
+export function closeExpiredPetitions(maxAgeMs: number): number {
+  const cutoff = Date.now() - maxAgeMs;
+  const result = getDb().prepare(`
+    UPDATE petitions SET status = 'closed', closed_at = ?
+    WHERE status = 'open' AND created_at < ?
+  `).run(Date.now(), cutoff);
+  return result.changes;
+}
+
+// === Body processing queries ===
+
+export function markBodyProcessed(residentId: string): void {
+  // Mark the deceased resident as processed
+  getDb().prepare(
+    "UPDATE residents SET status = 'PROCESSED' WHERE id = ? AND status = 'DECEASED'"
+  ).run(residentId);
+}
+
+export function updateCarryingBody(residentId: string, bodyId: string | null): void {
+  getDb().prepare(
+    'UPDATE residents SET carrying_body_id = ? WHERE id = ?'
+  ).run(bodyId, residentId);
 }

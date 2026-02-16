@@ -8,6 +8,7 @@ import {
   TRAIN_INTERVAL_SEC, STARTING_QUID, FOV_ANGLE, FOV_RANGE, AMBIENT_RANGE,
   NORMAL_VOICE_RANGE, WHISPER_RANGE, SHOUT_RANGE, WALL_SOUND_FACTOR,
   TIME_SCALE, STARTING_HOUR, GAME_DAY_SECONDS,
+  PETITION_MAX_AGE_GAME_HOURS, BODY_COLLECT_RANGE,
 } from '@otra/shared';
 import type { WebSocket } from 'ws';
 import { TileMap } from './map.js';
@@ -16,10 +17,12 @@ import type { ResidentRow } from '../db/queries.js';
 import {
   getAllAliveResidents, batchSaveResidents, saveWorldState,
   getWorldState, markResidentDead, logEvent, getInventory, batchSaveInventory,
+  getJob, closeExpiredPetitions,
 } from '../db/queries.js';
 import type { PerceptionUpdate, AudibleMessage, VisibleEntity, VisibleBuilding } from '@otra/shared';
 import { enterBuilding } from '../buildings/building-actions.js';
 import { sendWebhook } from '../network/webhooks.js';
+import { updateShift } from '../economy/jobs.js';
 
 export interface ResidentEntity {
   id: string;
@@ -40,6 +43,9 @@ export interface ResidentEntity {
   isDead: boolean;
   currentBuilding: string | null;
   employment: { job: string; onShift: boolean } | null;
+  currentJobId: string | null;
+  shiftStartTime: number | null;  // accumulated game-seconds on current shift
+  carryingBodyId: string | null;
   lastUbiCollection: number;
   // Appearance
   skinTone: number;
@@ -70,6 +76,8 @@ export class World {
   trainQueue: string[] = [];
   private lastSaveTime = 0;
   private saveInterval = 30; // seconds
+  private petitionCheckTimer = 0;
+  private petitionCheckInterval = 60; // check every 60 real seconds
 
   constructor(map: TileMap) {
     this.map = map;
@@ -115,7 +123,10 @@ export class World {
       isSleeping: row.is_sleeping === 1,
       isDead: row.status === 'DECEASED',
       currentBuilding: row.current_building,
-      employment: null,
+      employment: null,  // populated below if job exists
+      currentJobId: row.current_job_id ?? null,
+      shiftStartTime: row.shift_start_time ?? null,
+      carryingBodyId: row.carrying_body_id ?? null,
       lastUbiCollection: row.last_ubi_collection,
       skinTone: row.skin_tone,
       hairStyle: row.hair_style,
@@ -131,6 +142,16 @@ export class World {
       pathBlockedTicks: 0,
       pendingNotifications: [],
     };
+    // Load employment from job if assigned
+    if (entity.currentJobId) {
+      const job = getJob(entity.currentJobId);
+      if (job) {
+        entity.employment = { job: job.title, onShift: false };
+      } else {
+        entity.currentJobId = null;
+      }
+    }
+
     this.residents.set(row.id, entity);
     return entity;
   }
@@ -270,6 +291,9 @@ export class World {
         }
       }
 
+      // Employment: track shift progress and pay wages
+      updateShift(r, dt);
+
       // Forced collapse at energy 0 — auto-sleep to prevent permanent immobilization
       if (r.needs.energy <= 0 && !r.isSleeping) {
         r.needs.energy = 0;
@@ -374,6 +398,17 @@ export class World {
     if (this.trainQueue.length > 0 && this.trainTimer >= interval - 5) {
       this.trainTimer = interval; // force trigger on next check
     }
+
+    // Periodically close expired petitions
+    this.petitionCheckTimer += dt;
+    if (this.petitionCheckTimer >= this.petitionCheckInterval) {
+      this.petitionCheckTimer = 0;
+      const maxAgeMs = (PETITION_MAX_AGE_GAME_HOURS * 3600 / TIME_SCALE) * 1000;
+      const closed = closeExpiredPetitions(maxAgeMs);
+      if (closed > 0) {
+        console.log(`[World] Closed ${closed} expired petition(s)`);
+      }
+    }
   }
 
   private spawnTrainArrivals(): void {
@@ -427,6 +462,9 @@ export class World {
     }
     if (resident.isSleeping) {
       interactions.push('wake');
+    }
+    if (resident.employment) {
+      interactions.push('quit_job');
     }
 
     // Include own pending speech in audible (distance 0)
@@ -489,6 +527,11 @@ export class World {
           action: other.isDead ? 'dead' : other.isSleeping ? 'sleeping' : other.speed !== 'stop' ? 'walking' : 'idle',
           is_dead: other.isDead,
         } satisfies VisibleResident);
+
+        // Body collection interaction: can pick up dead residents
+        if (other.isDead && dist <= BODY_COLLECT_RANGE && !resident.carryingBodyId && !resident.isSleeping) {
+          interactions.push(`collect_body:${other.id}`);
+        }
       }
 
       // Check audibility (recent speech)
@@ -534,6 +577,17 @@ export class World {
         for (const zone of currentBldg.interactionZones) {
           interactions.push(zone.action);
         }
+      }
+      // Council Hall extras
+      if (resident.currentBuilding === 'council-hall') {
+        interactions.push('list_jobs', 'list_petitions');
+        if (resident.employment) {
+          interactions.push('quit_job');
+        }
+      }
+      // Mortuary: process_body if carrying one
+      if (resident.currentBuilding === 'council-mortuary' && resident.carryingBodyId) {
+        interactions.push('process_body');
       }
     }
 
@@ -628,6 +682,9 @@ export class World {
         wallet: r.wallet,
         is_sleeping: r.isSleeping,
         current_building: r.currentBuilding,
+        current_job_id: r.currentJobId,
+        shift_start_time: r.shiftStartTime,
+        carrying_body_id: r.carryingBodyId,
       }));
 
     batchSaveResidents(residents);

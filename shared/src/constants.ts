@@ -73,5 +73,17 @@ export const TIME_SCALE = 3;                  // 3x real-time (1 game day = 8 re
 export const GAME_DAY_SECONDS = 24 * 3600;    // seconds in one game day (86400)
 export const STARTING_HOUR = 6;               // world starts at 6:00 AM game time
 
+// === Employment ===
+export const SHIFT_DURATION_GAME_HOURS = 8;   // game-hours per shift
+export const ENERGY_COST_WORK_PER_SEC = 2.0 / 3600; // 2 energy/game-hour while working
+
+// === Petitions ===
+export const PETITION_COST_QUID = 5;          // QUID to write a petition
+export const PETITION_MAX_AGE_GAME_HOURS = 24; // petitions auto-close after 24 game hours
+
+// === Body collection ===
+export const BODY_BOUNTY = 5;                 // QUID reward for processing a body
+export const BODY_COLLECT_RANGE = 64;         // px — must be within 2 tiles of body
+
 // === Currency symbol ===
 export const QUID_SYMBOL = 'Ɋ';              // Ɋ (Latin capital Q with hook tail, U+024A)

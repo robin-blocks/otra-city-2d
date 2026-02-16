@@ -116,7 +116,11 @@ export type ClientMessage =
   | { type: 'quit_job'; request_id?: string }
   | { type: 'write_petition'; params: { category: string; description: string }; request_id?: string }
   | { type: 'vote_petition'; params: { petition_id: string }; request_id?: string }
-  | { type: 'depart'; request_id?: string };
+  | { type: 'collect_body'; params: { body_id: string }; request_id?: string }
+  | { type: 'process_body'; request_id?: string }
+  | { type: 'depart'; request_id?: string }
+  | { type: 'list_jobs'; request_id?: string }
+  | { type: 'list_petitions'; request_id?: string };
 
 // === Registration ===
 

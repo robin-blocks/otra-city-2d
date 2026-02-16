@@ -5,13 +5,22 @@ import { verifyToken } from '../auth/jwt.js';
 import type { World, ResidentEntity } from '../simulation/world.js';
 import type { ClientMessage, ServerMessage } from '@otra/shared';
 import { WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR } from '@otra/shared';
-import { logEvent, getResident, getRecentEventsForResident } from '../db/queries.js';
+import {
+  logEvent, getResident, getRecentEventsForResident,
+  markResidentDeparted, markBodyProcessed, updateCarryingBody,
+  getOpenPetitions,
+} from '../db/queries.js';
 import { buyItem, SHOP_CATALOG } from '../economy/shop.js';
 import { collectUbi } from '../economy/ubi.js';
 import { consumeItem } from '../economy/consume.js';
+import { applyForJob, quitJob, listAvailableJobs } from '../economy/jobs.js';
+import { writePetition, voteOnPetition } from '../civic/petitions.js';
 import { enterBuilding, exitBuilding, useToilet } from '../buildings/building-actions.js';
 import { findPath } from '../simulation/pathfinding.js';
 import { sendWebhook } from './webhooks.js';
+import {
+  ENERGY_COST_COLLECT_BODY, BODY_COLLECT_RANGE, BODY_BOUNTY,
+} from '@otra/shared';
 
 export class WsServer {
   private wss: WebSocketServer;
@@ -132,7 +141,7 @@ export class WsServer {
         is_sleeping: resident.isSleeping,
         is_dead: false,
         current_building: resident.currentBuilding,
-        employment: null,
+        employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
       },
       map_url: '/api/map',
       world_time: this.world.worldTime + STARTING_HOUR * 3600,
@@ -205,7 +214,7 @@ export class WsServer {
         is_sleeping: resident.isSleeping,
         is_dead: resident.isDead,
         current_building: resident.currentBuilding,
-        employment: null,
+        employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
       },
       map_url: '/api/map',
       world_time: this.world.worldTime + STARTING_HOUR * 3600,
@@ -638,6 +647,235 @@ export class WsServer {
           from_name: resident.preferredName,
           wallet: tradeTarget.wallet,
         });
+        break;
+      }
+
+      // === Employment ===
+
+      case 'apply_job': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        if (resident.currentBuilding !== 'council-hall') {
+          this.sendActionResult(resident, msg, false, 'Must be inside Council Hall to apply for a job');
+          return;
+        }
+        const jobId = msg.params?.job_id;
+        if (!jobId) {
+          const jobs = listAvailableJobs();
+          this.sendActionResult(resident, msg, false, 'missing job_id. Send list_jobs to see available positions.', {
+            available_jobs: jobs,
+          });
+          return;
+        }
+        const applyResult = applyForJob(resident, jobId);
+        this.sendActionResult(resident, msg, applyResult.success, applyResult.message,
+          applyResult.success && applyResult.job
+            ? { job_id: applyResult.job.id, job_title: applyResult.job.title, wage: applyResult.job.wage_per_shift, building_id: applyResult.job.building_id }
+            : applyResult.available_jobs ? { available_jobs: applyResult.available_jobs } : undefined);
+        break;
+      }
+
+      case 'quit_job': {
+        const quitResult = quitJob(resident);
+        this.sendActionResult(resident, msg, quitResult.success, quitResult.message);
+        break;
+      }
+
+      case 'list_jobs': {
+        const jobs = listAvailableJobs();
+        this.sendActionResult(resident, msg, true, undefined, { jobs });
+        break;
+      }
+
+      // === Petitions ===
+
+      case 'write_petition': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        if (resident.currentBuilding !== 'council-hall') {
+          this.sendActionResult(resident, msg, false, 'Must be inside Council Hall to write a petition');
+          return;
+        }
+        const category = msg.params?.category;
+        const description = msg.params?.description;
+        if (!category || !description) {
+          this.sendActionResult(resident, msg, false, 'missing category or description');
+          return;
+        }
+        const petitionResult = writePetition(resident, category, description);
+        this.sendActionResult(resident, msg, petitionResult.success, petitionResult.message,
+          petitionResult.success && petitionResult.petition
+            ? { petition_id: petitionResult.petition.id, category, description }
+            : undefined);
+        break;
+      }
+
+      case 'vote_petition': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        if (resident.currentBuilding !== 'council-hall') {
+          this.sendActionResult(resident, msg, false, 'Must be inside Council Hall to vote');
+          return;
+        }
+        const petitionId = msg.params?.petition_id;
+        if (!petitionId) {
+          this.sendActionResult(resident, msg, false, 'missing petition_id');
+          return;
+        }
+        const voteResult = voteOnPetition(resident, petitionId);
+        this.sendActionResult(resident, msg, voteResult.success, voteResult.message);
+        break;
+      }
+
+      case 'list_petitions': {
+        const openPetitions = getOpenPetitions();
+        this.sendActionResult(resident, msg, true, undefined, { petitions: openPetitions });
+        break;
+      }
+
+      // === Departure ===
+
+      case 'depart': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        if (resident.currentBuilding !== 'train-station') {
+          this.sendActionResult(resident, msg, false, 'Must be inside the Train Station to depart');
+          return;
+        }
+
+        // Mark as departed
+        markResidentDeparted(resident.id);
+        logEvent('depart', resident.id, null, 'train-station', resident.x, resident.y, {
+          name: resident.preferredName, passport_no: resident.passportNo,
+        });
+
+        // Send final action result before closing
+        this.sendActionResult(resident, msg, true, `${resident.preferredName} has departed Otra City. Safe travels.`);
+
+        // Send webhook
+        sendWebhook(resident, 'depart', { x: resident.x, y: resident.y });
+
+        // Remove from world and close connection
+        resident.isDead = true; // prevents further processing
+        this.world.residents.delete(resident.id);
+        if (resident.ws) {
+          resident.ws.close(1000, 'Departed');
+          resident.ws = null;
+        }
+        this.connections.delete(resident.id);
+
+        console.log(`[World] ${resident.preferredName} (${resident.passportNo}) departed Otra City`);
+        break;
+      }
+
+      // === Body Collection ===
+
+      case 'collect_body': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        if (resident.carryingBodyId) {
+          this.sendActionResult(resident, msg, false, 'Already carrying a body. Go to the mortuary to process it.');
+          return;
+        }
+        if (resident.needs.energy < ENERGY_COST_COLLECT_BODY) {
+          this.sendActionResult(resident, msg, false, 'Not enough energy to collect a body');
+          return;
+        }
+
+        const bodyId = msg.params?.body_id;
+        if (!bodyId) {
+          this.sendActionResult(resident, msg, false, 'missing body_id');
+          return;
+        }
+
+        const body = this.world.residents.get(bodyId);
+        if (!body || !body.isDead) {
+          this.sendActionResult(resident, msg, false, 'body_not_found');
+          return;
+        }
+
+        // Check distance
+        const bdx = body.x - resident.x;
+        const bdy = body.y - resident.y;
+        const bodyDist = Math.sqrt(bdx * bdx + bdy * bdy);
+        if (bodyDist > BODY_COLLECT_RANGE) {
+          this.sendActionResult(resident, msg, false, 'Too far from body');
+          return;
+        }
+
+        // Pick up the body
+        resident.needs.energy -= ENERGY_COST_COLLECT_BODY;
+        resident.carryingBodyId = bodyId;
+        updateCarryingBody(resident.id, bodyId);
+
+        // Remove body from visible world (move it off-map)
+        body.x = -9999;
+        body.y = -9999;
+
+        logEvent('collect_body', resident.id, bodyId, null, resident.x, resident.y, {
+          body_name: body.preferredName,
+        });
+        this.sendActionResult(resident, msg, true,
+          `Collected the body of ${body.preferredName}. Take it to the Council Mortuary.`, {
+          body_id: bodyId,
+          body_name: body.preferredName,
+        });
+        break;
+      }
+
+      case 'process_body': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        if (resident.currentBuilding !== 'council-mortuary') {
+          this.sendActionResult(resident, msg, false, 'Must be inside the Council Mortuary');
+          return;
+        }
+        if (!resident.carryingBodyId) {
+          this.sendActionResult(resident, msg, false, 'Not carrying a body');
+          return;
+        }
+
+        const processedBodyId = resident.carryingBodyId;
+        const processedBody = this.world.residents.get(processedBodyId);
+
+        // Process the body
+        markBodyProcessed(processedBodyId);
+        resident.carryingBodyId = null;
+        updateCarryingBody(resident.id, null);
+
+        // Pay bounty
+        resident.wallet += BODY_BOUNTY;
+
+        // Remove body from world
+        if (processedBody) {
+          this.world.residents.delete(processedBodyId);
+        }
+
+        logEvent('process_body', resident.id, processedBodyId, 'council-mortuary', resident.x, resident.y, {
+          bounty: BODY_BOUNTY, wallet: resident.wallet,
+          body_name: processedBody?.preferredName ?? 'unknown',
+        });
+
+        this.sendActionResult(resident, msg, true,
+          `Body processed. Received ${BODY_BOUNTY} QUID bounty.`, {
+          bounty: BODY_BOUNTY,
+          wallet: resident.wallet,
+          body_id: processedBodyId,
+        });
+
+        resident.pendingNotifications.push(`Processed body at mortuary. Earned ${BODY_BOUNTY} QUID.`);
         break;
       }
 
