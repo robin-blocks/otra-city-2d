@@ -2,6 +2,7 @@ import { TILE_SIZE, ENERGY_COST_USE_TOILET } from '@otra/shared';
 import type { ResidentEntity } from '../simulation/world.js';
 import type { World } from '../simulation/world.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
+import { getOpenPetitions } from '../db/queries.js';
 
 export interface BuildingActionResult {
   success: boolean;
@@ -59,6 +60,21 @@ export function enterBuilding(
       .map(item => `${item.name} (${item.stock > 0 ? item.stock : 'out'})`)
       .join(', ');
     resident.pendingNotifications.push(`Shop stock: ${stockSummary}`);
+  }
+
+  // Council Hall welcome notification — encourage civic participation
+  if (buildingId === 'council-hall') {
+    const petitions = getOpenPetitions();
+    const petitionCount = petitions.length;
+    if (petitionCount > 0) {
+      resident.pendingNotifications.push(
+        `Welcome to the Council Hall! There ${petitionCount === 1 ? 'is' : 'are'} ${petitionCount} open petition${petitionCount !== 1 ? 's' : ''} awaiting your vote. Writing and voting are completely free.`
+      );
+    } else {
+      resident.pendingNotifications.push(
+        'Welcome to the Council Hall! No open petitions right now. Be the first to write one — it\'s completely free. Share your ideas to help shape Otra City.'
+      );
+    }
   }
 
   return { success: true, message: `Entered ${building.name}` };

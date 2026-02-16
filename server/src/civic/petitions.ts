@@ -20,7 +20,7 @@ export interface VoteResult {
 
 /**
  * Write a new petition at the Council Hall.
- * Costs QUID and energy.
+ * Free to write — no QUID or energy cost.
  */
 export function writePetition(
   resident: ResidentEntity,
@@ -56,7 +56,7 @@ export function writePetition(
 
   return {
     success: true,
-    message: `Petition filed: "${category}". Cost: ${PETITION_COST_QUID} QUID.`,
+    message: `Petition filed: "${category}". Your voice matters — thank you for participating!`,
     petition,
   };
 }

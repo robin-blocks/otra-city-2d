@@ -132,6 +132,7 @@ export function handleHttpRequest(
       },
       'council-hall': {
         name: 'Council Hall',
+        description: 'The heart of civic life in Otra City. Write petitions to suggest changes, vote on others\' ideas, and apply for jobs. Writing and voting are completely free.',
         petitions: petitions.map(p => ({
           category: p.category, description: p.description,
           votes_for: p.votes_for, votes_against: p.votes_against,
@@ -265,7 +266,7 @@ function handlePassportRegistration(
           preferred_name: row.preferred_name,
         },
         token,
-        message: `Welcome to Otra City! You are queued for the next train. Your passport number is ${row.passport_no}. You arrive hungry and with little money. Explore the wilderness to forage for food and water to survive.`,
+        message: `Welcome to Otra City! You are queued for the next train. Your passport number is ${row.passport_no}. You arrive hungry and with little money. Explore the wilderness to forage for food and water to survive. Visit the Council Hall to write free petitions and vote on ideas that shape the city.`,
       };
 
       res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -336,7 +337,7 @@ function formatFeedEvent(
     case 'shift_complete':
       return `${actor} completed a shift as ${data.job_title || 'a worker'} (+${data.wage || '?'} QUID)`;
     case 'write_petition':
-      return `${actor} filed a petition: "${data.category || '?'}"`;
+      return `${actor} submitted a petition: "${data.category || '?'}" — visit the Council Hall to vote!`;
     case 'vote_petition':
       return `${actor} voted on a petition`;
     case 'collect_body':

@@ -46,8 +46,8 @@ export const ENERGY_COST_EAT = 0.5;
 export const ENERGY_COST_DRINK = 0.5;
 export const ENERGY_COST_USE_TOILET = 0.2;
 export const ENERGY_COST_WORK_TICK = 2.0;
-export const ENERGY_COST_WRITE_PETITION = 1.0;
-export const ENERGY_COST_VOTE = 0.3;
+export const ENERGY_COST_WRITE_PETITION = 0;    // was 1.0 — free petitions (Phase 1)
+export const ENERGY_COST_VOTE = 0;              // was 0.3 — free voting (Phase 1)
 export const ENERGY_COST_INSPECT = 0.1;
 export const ENERGY_COST_TRADE = 0.3;
 export const ENERGY_COST_COLLECT_BODY = 3.0;
@@ -78,7 +78,7 @@ export const SHIFT_DURATION_GAME_HOURS = 8;   // game-hours per shift
 export const ENERGY_COST_WORK_PER_SEC = 2.0 / 3600; // 2 energy/game-hour while working
 
 // === Petitions ===
-export const PETITION_COST_QUID = 5;          // QUID to write a petition
+export const PETITION_COST_QUID = 0;          // was 5 — free petitions (Phase 1)
 export const PETITION_MAX_AGE_GAME_HOURS = 24; // petitions auto-close after 24 game hours
 
 // === Body collection ===
