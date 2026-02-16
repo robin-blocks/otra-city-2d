@@ -14,6 +14,8 @@ import {
   LOITER_SENTENCE_GAME_HOURS,
   FORAGE_RANGE, BERRY_BUSH_MAX_USES, BERRY_BUSH_REGROW_GAME_HOURS,
   SPRING_MAX_USES, SPRING_REGROW_GAME_HOURS,
+  SOCIAL_CONVERSATION_RANGE, SOCIAL_CONVERSATION_DECAY_REDUCTION,
+  SOCIAL_CONVERSATION_WINDOW, SOCIAL_CONVERSATION_ENERGY_RECOVERY,
 } from '@otra/shared';
 import type { WebSocket } from 'ws';
 import { TileMap } from './map.js';
@@ -77,7 +79,7 @@ export interface ResidentEntity {
   ws: WebSocket | null;
   lastActionTime: number;
   // Speech tracking for perception
-  pendingSpeech: Array<{ text: string; volume: 'whisper' | 'normal' | 'shout'; time: number }>;
+  pendingSpeech: Array<{ text: string; volume: 'whisper' | 'normal' | 'shout'; time: number; directedTo: string | null }>;
   // Pathfinding state
   pathWaypoints: Array<{ x: number; y: number }> | null;
   pathIndex: number;
@@ -88,6 +90,9 @@ export interface ResidentEntity {
   // Social proximity (runtime only, not persisted)
   socialNearbyCount: number;
   socialCheckCounter: number;
+  // Conversation tracking (runtime only, not persisted)
+  lastConversationTime: number;
+  lastSpeechWebhookTime: number;
   // Law enforcement
   lawBreaking: string[];
   arrestedBy: string | null;
@@ -206,6 +211,8 @@ export class World {
       pendingNotifications: [],
       socialNearbyCount: 0,
       socialCheckCounter: 0,
+      lastConversationTime: 0,
+      lastSpeechWebhookTime: 0,
       // Law enforcement
       lawBreaking: JSON.parse(row.law_breaking || '[]'),
       arrestedBy: row.arrested_by ?? null,
@@ -354,7 +361,11 @@ export class World {
       if (r.isDead) continue;
 
       // Social bonus: reduce hunger/thirst decay when near other awake residents
-      const socialMultiplier = r.socialNearbyCount > 0 ? (1 - SOCIAL_DECAY_REDUCTION) : 1;
+      // Enhanced bonus when actively conversing (within last SOCIAL_CONVERSATION_WINDOW seconds)
+      const isConversing = Date.now() - r.lastConversationTime < SOCIAL_CONVERSATION_WINDOW * 1000;
+      const socialMultiplier = isConversing
+        ? (1 - SOCIAL_CONVERSATION_DECAY_REDUCTION)
+        : r.socialNearbyCount > 0 ? (1 - SOCIAL_DECAY_REDUCTION) : 1;
 
       // Hunger decays
       r.needs.hunger = Math.max(0, r.needs.hunger - HUNGER_DECAY_PER_SEC * dt * socialMultiplier);
@@ -379,6 +390,11 @@ export class World {
         }
       } else {
         r.needs.energy = Math.max(0, r.needs.energy - ENERGY_PASSIVE_DECAY_PER_SEC * dt);
+
+        // Conversation energy recovery: +0.5 energy/hr when conversing
+        if (isConversing) {
+          r.needs.energy = Math.min(100, r.needs.energy + SOCIAL_CONVERSATION_ENERGY_RECOVERY * dt);
+        }
 
         // Walking costs energy
         if (r.speed === 'walk') {
@@ -702,12 +718,15 @@ export class World {
       const notifications = [...resident.pendingNotifications];
       // Still include own pending speech
       for (const speech of resident.pendingSpeech) {
+        const toResident = speech.directedTo ? this.residents.get(speech.directedTo) : null;
         audible.push({
           from: resident.id,
           from_name: resident.preferredName,
           text: speech.text,
           volume: speech.volume,
           distance: 0,
+          to: toResident ? speech.directedTo! : undefined,
+          to_name: toResident ? toResident.preferredName : undefined,
         });
       }
       return {
@@ -761,12 +780,15 @@ export class World {
 
     // Include own pending speech in audible (distance 0)
     for (const speech of resident.pendingSpeech) {
+      const toResident = speech.directedTo ? this.residents.get(speech.directedTo) : null;
       audible.push({
         from: resident.id,
         from_name: resident.preferredName,
         text: speech.text,
         volume: speech.volume,
         distance: 0,
+        to: toResident ? speech.directedTo! : undefined,
+        to_name: toResident ? toResident.preferredName : undefined,
       });
     }
 
@@ -852,13 +874,23 @@ export class World {
         range *= Math.pow(WALL_SOUND_FACTOR, walls);
 
         if (dist <= range) {
+          const toResident = speech.directedTo ? this.residents.get(speech.directedTo) : null;
           audible.push({
             from: other.id,
             from_name: other.preferredName,
             text: speech.text,
             volume: speech.volume,
             distance: Math.round(dist * 10) / 10,
+            to: toResident ? speech.directedTo! : undefined,
+            to_name: toResident ? toResident.preferredName : undefined,
           });
+
+          // Brain pin: push notification when speech is directed at this resident
+          if (speech.directedTo === resident.id) {
+            resident.pendingNotifications.push(
+              `${other.preferredName} said to you: "${speech.text}"`
+            );
+          }
         }
       }
     }
@@ -990,6 +1022,196 @@ export class World {
       interactions: [...new Set(interactions)],
       notifications: [...resident.pendingNotifications],
     };
+  }
+
+  /** Compute full-world perception for spectators (no FOV filtering) */
+  computeSpectatorPerception(resident: ResidentEntity, tick: number): PerceptionUpdate {
+    const visible: VisibleEntity[] = [];
+    const audible: AudibleMessage[] = [];
+
+    // Include ALL residents (no FOV/distance filtering)
+    for (const [id, other] of this.residents) {
+      if (id === resident.id) continue;
+
+      visible.push({
+        id: other.id,
+        type: 'resident',
+        name: other.preferredName,
+        x: other.x,
+        y: other.y,
+        facing: other.facing,
+        appearance: {
+          skin_tone: other.skinTone,
+          hair_style: other.hairStyle,
+          hair_color: other.hairColor,
+          build: other.build,
+        },
+        action: other.isDead ? 'dead' : other.isSleeping ? 'sleeping' : other.speed !== 'stop' ? 'walking' : 'idle',
+        is_dead: other.isDead,
+        agent_framework: other.agentFramework ?? undefined,
+        condition: other.isDead ? undefined : computeCondition(other),
+        is_wanted: other.lawBreaking.length > 0 ? true : undefined,
+        is_police: other.currentJobId === 'police-officer' ? true : undefined,
+        is_arrested: (other.arrestedBy || other.prisonSentenceEnd) ? true : undefined,
+      } satisfies VisibleResident);
+
+      // Include ALL pending speech (no distance/wall filtering)
+      for (const speech of other.pendingSpeech) {
+        const dx = other.x - resident.x;
+        const dy = other.y - resident.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const toResident = speech.directedTo ? this.residents.get(speech.directedTo) : null;
+        audible.push({
+          from: other.id,
+          from_name: other.preferredName,
+          text: speech.text,
+          volume: speech.volume,
+          distance: Math.round(dist * 10) / 10,
+          to: toResident ? speech.directedTo! : undefined,
+          to_name: toResident ? toResident.preferredName : undefined,
+        });
+      }
+    }
+
+    // Include own pending speech
+    for (const speech of resident.pendingSpeech) {
+      const toResident = speech.directedTo ? this.residents.get(speech.directedTo) : null;
+      audible.push({
+        from: resident.id,
+        from_name: resident.preferredName,
+        text: speech.text,
+        volume: speech.volume,
+        distance: 0,
+        to: toResident ? speech.directedTo! : undefined,
+        to_name: toResident ? toResident.preferredName : undefined,
+      });
+    }
+
+    // Include ALL buildings (no distance filtering)
+    for (const building of this.map.data.buildings) {
+      const primaryDoor = building.doors[0];
+      visible.push({
+        id: building.id,
+        type: 'building',
+        name: building.name,
+        building_type: building.type,
+        x: building.tileX * TILE_SIZE,
+        y: building.tileY * TILE_SIZE,
+        width: building.widthTiles * TILE_SIZE,
+        height: building.heightTiles * TILE_SIZE,
+        door_x: primaryDoor ? primaryDoor.tileX * TILE_SIZE + TILE_SIZE / 2 : building.tileX * TILE_SIZE,
+        door_y: primaryDoor ? primaryDoor.tileY * TILE_SIZE + TILE_SIZE / 2 : building.tileY * TILE_SIZE,
+      } satisfies VisibleBuilding);
+    }
+
+    // Include ALL forageable nodes (no distance filtering)
+    for (const [, node] of this.forageableNodes) {
+      visible.push({
+        id: node.id,
+        type: 'forageable',
+        x: node.x,
+        y: node.y,
+        resource_type: node.type,
+        uses_remaining: node.usesRemaining,
+        max_uses: node.maxUses,
+      } satisfies VisibleForageable);
+    }
+
+    return {
+      tick,
+      time: new Date().toISOString(),
+      world_time: this.worldTime + STARTING_HOUR * 3600,
+      self: {
+        id: resident.id,
+        passport_no: resident.passportNo,
+        x: resident.x,
+        y: resident.y,
+        facing: resident.facing,
+        hunger: Math.round(resident.needs.hunger * 10) / 10,
+        thirst: Math.round(resident.needs.thirst * 10) / 10,
+        energy: Math.round(resident.needs.energy * 10) / 10,
+        bladder: Math.round(resident.needs.bladder * 10) / 10,
+        health: Math.round(resident.needs.health * 10) / 10,
+        wallet: resident.wallet,
+        inventory: resident.inventory,
+        status: resident.isDead ? 'dead' : resident.isSleeping ? 'sleeping' : resident.speed !== 'stop' ? 'walking' : 'idle',
+        is_sleeping: resident.isSleeping,
+        current_building: resident.currentBuilding,
+        employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
+        law_breaking: resident.lawBreaking,
+        prison_sentence_remaining: resident.prisonSentenceEnd !== null
+          ? Math.max(0, Math.round(resident.prisonSentenceEnd - this.worldTime))
+          : null,
+        carrying_suspect_id: resident.carryingSuspectId,
+      },
+      visible,
+      audible,
+      interactions: [], // spectators can't interact
+      notifications: [...resident.pendingNotifications],
+    };
+  }
+
+  /** Fire speech_heard webhooks and update conversation timestamps */
+  computeSpeechListeners(): void {
+    const now = Date.now();
+
+    for (const [speakerId, speaker] of this.residents) {
+      if (speaker.isDead || speaker.pendingSpeech.length === 0) continue;
+
+      for (const speech of speaker.pendingSpeech) {
+        let range: number;
+        switch (speech.volume) {
+          case 'whisper': range = WHISPER_RANGE; break;
+          case 'shout': range = SHOUT_RANGE; break;
+          default: range = NORMAL_VOICE_RANGE;
+        }
+
+        let anyListenerInConversationRange = false;
+
+        for (const [listenerId, listener] of this.residents) {
+          if (listenerId === speakerId || listener.isDead) continue;
+
+          const dx = listener.x - speaker.x;
+          const dy = listener.y - speaker.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          // Apply wall attenuation
+          const walls = this.map.countWallsBetween(speaker.x, speaker.y, listener.x, listener.y);
+          const effectiveRange = range * Math.pow(WALL_SOUND_FACTOR, walls);
+
+          if (dist > effectiveRange) continue;
+
+          // Conversation bonus: update timestamps for both parties
+          if (dist <= SOCIAL_CONVERSATION_RANGE) {
+            anyListenerInConversationRange = true;
+            listener.lastConversationTime = now;
+          }
+
+          // Webhook: fire speech_heard for listeners with webhookUrl
+          if (listener.webhookUrl) {
+            const isDirected = speech.directedTo === listenerId;
+
+            // Throttle undirected speech webhooks to 1/second; directed always fires
+            if (isDirected || now - listener.lastSpeechWebhookTime >= 1000) {
+              listener.lastSpeechWebhookTime = now;
+              sendWebhook(listener, 'speech_heard', {
+                from_id: speakerId,
+                from_name: speaker.preferredName,
+                text: speech.text,
+                volume: speech.volume,
+                distance: Math.round(dist * 10) / 10,
+                directed: isDirected,
+              });
+            }
+          }
+        }
+
+        // Speaker gets conversation bonus only if someone else heard them within range
+        if (anyListenerInConversationRange) {
+          speaker.lastConversationTime = now;
+        }
+      }
+    }
   }
 
   /** Clear pending speech after perception broadcast */

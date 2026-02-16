@@ -91,6 +91,10 @@ export const SHOP_RESTOCK_INTERVAL_GAME_HOURS = 2;  // restock every 2 game hour
 // === Social ===
 export const SOCIAL_PROXIMITY_RANGE = 100;    // px — range for social bonus
 export const SOCIAL_DECAY_REDUCTION = 0.15;   // 15% slower hunger/thirst when near others
+export const SOCIAL_CONVERSATION_RANGE = 150;              // px — range for conversation bonus
+export const SOCIAL_CONVERSATION_DECAY_REDUCTION = 0.30;   // 30% slower decay when conversing
+export const SOCIAL_CONVERSATION_WINDOW = 30;              // seconds — bonus persists this long after speech
+export const SOCIAL_CONVERSATION_ENERGY_RECOVERY = 0.5 / 3600;  // +0.5 energy/hr when conversing
 
 // === Giving ===
 export const GIVE_RANGE = 100;               // px — must be within 100px to give items

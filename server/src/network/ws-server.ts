@@ -395,8 +395,14 @@ export class WsServer {
         }
         const text = msg.params?.text || '';
         const volume = msg.params?.volume || 'normal';
+        const directedTo = msg.params?.to || null;
         if (text.length === 0 || text.length > 280) {
           this.sendActionResult(resident, msg, false, 'invalid_text');
+          return;
+        }
+        // Validate directed target exists if specified
+        if (directedTo && !this.world.residents.has(directedTo)) {
+          this.sendActionResult(resident, msg, false, 'target_not_found');
           return;
         }
         const cost = volume === 'shout' ? ENERGY_COST_SHOUT : ENERGY_COST_SPEAK;
@@ -405,8 +411,8 @@ export class WsServer {
           return;
         }
         resident.needs.energy -= cost;
-        resident.pendingSpeech.push({ text, volume, time: Date.now() });
-        logEvent('speak', resident.id, null, null, resident.x, resident.y, { text, volume });
+        resident.pendingSpeech.push({ text, volume, time: Date.now(), directedTo });
+        logEvent('speak', resident.id, directedTo, null, resident.x, resident.y, { text, volume, to: directedTo });
         this.sendActionResult(resident, msg, true);
         break;
       }
@@ -1325,11 +1331,13 @@ export class WsServer {
       const msg: ServerMessage = { type: 'perception', data: perception };
       this.send(ws, msg);
 
-      // Also send to any spectators watching this resident
+      // Also send full-world perception to any spectators watching this resident
       const spectatorSet = this.spectators.get(id);
       if (spectatorSet) {
+        const spectatorPerception = this.world.computeSpectatorPerception(resident, tick);
+        const spectatorMsg: ServerMessage = { type: 'perception', data: spectatorPerception };
         for (const spectatorWs of spectatorSet) {
-          this.send(spectatorWs, msg);
+          this.send(spectatorWs, spectatorMsg);
         }
       }
     }
@@ -1340,10 +1348,10 @@ export class WsServer {
       const resident = this.world.residents.get(id);
       if (!resident || resident.isDead) continue;
 
-      const perception = this.world.computePerception(resident, tick);
-      const msg: ServerMessage = { type: 'perception', data: perception };
+      const spectatorPerception = this.world.computeSpectatorPerception(resident, tick);
+      const spectatorMsg: ServerMessage = { type: 'perception', data: spectatorPerception };
       for (const spectatorWs of spectatorSet) {
-        this.send(spectatorWs, msg);
+        this.send(spectatorWs, spectatorMsg);
       }
     }
   }

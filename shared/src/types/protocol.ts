@@ -76,6 +76,8 @@ export interface AudibleMessage {
   text: string;
   volume: 'whisper' | 'normal' | 'shout';
   distance: number;
+  to?: string;
+  to_name?: string;
 }
 
 export interface InspectData {
@@ -121,7 +123,7 @@ export type ClientMessage =
   | { type: 'move_to'; params: { target: string } | { x: number; y: number }; request_id?: string }
   | { type: 'stop'; request_id?: string }
   | { type: 'face'; params: { direction: number }; request_id?: string }
-  | { type: 'speak'; params: { text: string; volume: 'whisper' | 'normal' | 'shout' }; request_id?: string }
+  | { type: 'speak'; params: { text: string; volume: 'whisper' | 'normal' | 'shout'; to?: string }; request_id?: string }
   | { type: 'eat'; params: { item_id: string }; request_id?: string }
   | { type: 'drink'; params: { item_id: string }; request_id?: string }
   | { type: 'sleep'; request_id?: string }

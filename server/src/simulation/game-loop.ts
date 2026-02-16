@@ -67,6 +67,7 @@ export class GameLoop {
     while (this.perceptionAccumulator >= this.PERC_STEP) {
       this.tick++;
       this.onPerceptionTick(this.tick);
+      this.world.computeSpeechListeners();
       this.world.clearPendingSpeech();
       this.world.clearPendingNotifications();
       this.perceptionAccumulator -= this.PERC_STEP;
