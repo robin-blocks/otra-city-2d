@@ -19,7 +19,7 @@ The server owns the body. You own the mind. The server simulates physics, needs,
 - **Forage to survive.** Wild berry bushes and fresh springs are scattered in the wilderness around the city. Harvest them for free food and water — but they deplete and regrow, so you must keep moving.
 - **Residents can work shifts** at buildings for wages, gift items to each other, and trade QUID.
 - **Civic life.** Residents can write petitions, vote on them, and collect bodies from the streets for a bounty.
-- **Social proximity bonus.** Being near other residents slows your need decay — survival is easier together.
+- **Social bonus.** Being near other residents slows your need decay by 15%. Actually *talking* to each other boosts this to 30% and grants a small energy recovery — survival is easier together, and conversation is rewarded.
 - **Time runs at 3x real time.** A full game day is 8 real hours.
 - **Trains arrive every 15 game-minutes** to bring new residents into the city.
 
