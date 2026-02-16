@@ -1,6 +1,7 @@
 import { TILE_SIZE, ENERGY_COST_USE_TOILET } from '@otra/shared';
 import type { ResidentEntity } from '../simulation/world.js';
 import type { World } from '../simulation/world.js';
+import { getShopCatalogWithStock } from '../economy/shop.js';
 
 export interface BuildingActionResult {
   success: boolean;
@@ -50,6 +51,15 @@ export function enterBuilding(
   resident.velocityX = 0;
   resident.velocityY = 0;
   resident.speed = 'stop';
+
+  // Stock notification when entering Council Supplies
+  if (buildingId === 'council-supplies') {
+    const catalog = getShopCatalogWithStock();
+    const stockSummary = catalog
+      .map(item => `${item.name} (${item.stock > 0 ? item.stock : 'out'})`)
+      .join(', ');
+    resident.pendingNotifications.push(`Shop stock: ${stockSummary}`);
+  }
 
   return { success: true, message: `Entered ${building.name}` };
 }

@@ -5,8 +5,8 @@ export const PERCEPTION_BROADCAST_RATE = 4;   // Hz — send perception to clien
 
 // === Map ===
 export const TILE_SIZE = 32;                  // pixels per tile
-export const MAP_TILES_X = 62;
-export const MAP_TILES_Y = 62;
+export const MAP_TILES_X = 100;
+export const MAP_TILES_Y = 100;
 export const MAP_WIDTH = MAP_TILES_X * TILE_SIZE;   // 1984px
 export const MAP_HEIGHT = MAP_TILES_Y * TILE_SIZE;  // 1984px
 
@@ -58,9 +58,9 @@ export const SLEEP_BAG_RATE_PER_SEC = 60 / 3600;      // +60 energy/real hr (0�
 export const SLEEP_MAX_THRESHOLD = 90;                 // can't sleep above 90 energy
 
 // === Economy ===
-export const UBI_AMOUNT = 15;                 // QUID per day
+export const UBI_AMOUNT = 0;                  // QUID per day — UBI discontinued, foraging replaces it
 export const UBI_COOLDOWN_SEC = 24 * 3600;    // 24 hours between collections
-export const STARTING_QUID = 15;              // first UBI payment at spawn
+export const STARTING_QUID = 5;              // reduced from 15 — emergency fund only
 
 // === Train ===
 export const TRAIN_INTERVAL_SEC = 15 * 60;    // 900 seconds = 15 minutes
@@ -84,6 +84,33 @@ export const PETITION_MAX_AGE_GAME_HOURS = 24; // petitions auto-close after 24 
 // === Body collection ===
 export const BODY_BOUNTY = 5;                 // QUID reward for processing a body
 export const BODY_COLLECT_RANGE = 64;         // px — must be within 2 tiles of body
+
+// === Shop stock ===
+export const SHOP_RESTOCK_INTERVAL_GAME_HOURS = 2;  // restock every 2 game hours
+
+// === Social ===
+export const SOCIAL_PROXIMITY_RANGE = 100;    // px — range for social bonus
+export const SOCIAL_DECAY_REDUCTION = 0.15;   // 15% slower hunger/thirst when near others
+
+// === Giving ===
+export const GIVE_RANGE = 100;               // px — must be within 100px to give items
+export const ENERGY_COST_GIVE = 0.2;
+
+// === Foraging ===
+export const FORAGE_RANGE = 48;                    // px — must be within 1.5 tiles
+export const ENERGY_COST_FORAGE = 0.5;
+export const BERRY_BUSH_MAX_USES = 3;
+export const BERRY_BUSH_REGROW_GAME_HOURS = 1.5;  // 30 real minutes
+export const SPRING_MAX_USES = 4;
+export const SPRING_REGROW_GAME_HOURS = 1.0;       // 20 real minutes
+
+// === Law enforcement ===
+export const LOITER_THRESHOLD_GAME_HOURS = 1;  // 1 game-hour of no movement = loitering
+export const LOITER_CHECK_DISTANCE = 16;       // px — movement less than this = "same place"
+export const ARREST_RANGE = 64;                // px — must be within 2 tiles to arrest
+export const ARREST_BOUNTY = 10;               // QUID per booking
+export const ENERGY_COST_ARREST = 2.0;
+export const LOITER_SENTENCE_GAME_HOURS = 2;   // prison sentence for loitering
 
 // === Currency symbol ===
 export const QUID_SYMBOL = 'Ɋ';              // Ɋ (Latin capital Q with hook tail, U+024A)

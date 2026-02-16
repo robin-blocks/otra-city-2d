@@ -1,4 +1,4 @@
-import { Container, Graphics } from 'pixi.js';
+import { Container, Graphics, Rectangle, Text, TextStyle } from 'pixi.js';
 import { TileType, GAME_DAY_SECONDS, MAP_WIDTH, MAP_HEIGHT, type MapData } from '@otra/shared';
 
 // Tile colors for v1 placeholder rendering
@@ -18,6 +18,10 @@ const TILE_COLORS: Record<number, number> = {
   [TileType.HEADSTONE]: 0x666666,
   [TileType.TRAIN_TRACK]: 0x444444,
   [TileType.PLATFORM]: 0x888877,
+  [TileType.BUSH_BERRY]: 0x2a6622,
+  [TileType.SPRING]: 0x4488cc,
+  [TileType.BUSH_DEPLETED]: 0x665533,
+  [TileType.SPRING_DRY]: 0x887766,
 };
 
 export class MapRenderer {
@@ -27,6 +31,7 @@ export class MapRenderer {
   private tintOverlay: Graphics;
   private buildingRoofs = new Map<string, Container>(); // building id -> roof container
   private currentBuilding: string | null = null;
+  onBuildingClick: ((buildingId: string) => void) | null = null;
   private lastTintHour = -1;
 
   constructor(parent: Container) {
@@ -83,6 +88,32 @@ export class MapRenderer {
           g.fill(0x553311);
           g.circle(x * ts + 16, y * ts + 12, 12);
           g.fill(0x226622);
+        } else if (obs === TileType.BUSH_BERRY) {
+          // Berry bush: dark green bush with berry dots
+          g.circle(x * ts + 16, y * ts + 16, 10);
+          g.fill(0x2a6622);
+          // Berry dots
+          g.circle(x * ts + 12, y * ts + 12, 2);
+          g.fill(0xcc2244);
+          g.circle(x * ts + 20, y * ts + 14, 2);
+          g.fill(0xcc2244);
+          g.circle(x * ts + 15, y * ts + 20, 2);
+          g.fill(0xcc2244);
+        } else if (obs === TileType.BUSH_DEPLETED) {
+          // Depleted bush: brown/withered
+          g.circle(x * ts + 16, y * ts + 16, 9);
+          g.fill(0x665533);
+        } else if (obs === TileType.SPRING) {
+          // Spring: blue puddle
+          g.ellipse(x * ts + 16, y * ts + 16, 11, 8);
+          g.fill(0x4488cc);
+          // Sparkle
+          g.circle(x * ts + 12, y * ts + 13, 2);
+          g.fill({ color: 0xaaddff, alpha: 0.7 });
+        } else if (obs === TileType.SPRING_DRY) {
+          // Dry spring: muddy patch
+          g.ellipse(x * ts + 16, y * ts + 16, 11, 8);
+          g.fill(0x887766);
         } else if (obs === TileType.FENCE) {
           g.rect(x * ts, y * ts, ts, ts);
           g.fill(color);
@@ -119,14 +150,57 @@ export class MapRenderer {
       }
     }
 
-    // Add building labels
+    // Add building labels — positioned outside near the door
+    const labelStyle = new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 9,
+      fill: 0xccccaa,
+      align: 'center',
+      letterSpacing: 0.5,
+      dropShadow: { color: 0x000000, blur: 3, distance: 0, alpha: 0.8 },
+    });
+
     for (const building of mapData.buildings) {
-      const labelG = new Graphics();
-      for (const door of building.doors) {
-        labelG.circle(door.tileX * ts + ts / 2, door.tileY * ts + ts / 2, 4);
-        labelG.fill(0xffcc00);
+      const label = new Text({ text: building.name.toUpperCase(), style: labelStyle });
+      label.anchor.set(0.5, 0.5);
+
+      // Place label outside the building, near the primary door
+      const door = building.doors[0];
+      if (door) {
+        const doorCenterX = door.tileX * ts + ts / 2;
+        const doorCenterY = door.tileY * ts + ts / 2;
+        if (door.facing === 'south') {
+          label.x = doorCenterX;
+          label.y = doorCenterY + ts + 4;
+        } else if (door.facing === 'north') {
+          label.x = doorCenterX;
+          label.y = doorCenterY - ts - 4;
+        } else if (door.facing === 'west') {
+          label.x = doorCenterX - ts - 4;
+          label.y = doorCenterY;
+        } else {
+          label.x = doorCenterX + ts + 4;
+          label.y = doorCenterY;
+        }
+      } else {
+        // Fallback: center below building
+        label.x = (building.tileX + building.widthTiles / 2) * ts;
+        label.y = (building.tileY + building.heightTiles) * ts + 8;
       }
-      this.obstacleLayer.addChild(labelG);
+
+      // Make label clickable
+      label.eventMode = 'static';
+      label.cursor = 'pointer';
+      label.hitArea = new Rectangle(
+        -label.width / 2 - 10, -label.height / 2 - 6,
+        label.width + 20, label.height + 12,
+      );
+      label.on('pointerdown', (e: { stopPropagation: () => void }) => {
+        e.stopPropagation();
+        this.onBuildingClick?.(building.id);
+      });
+
+      this.obstacleLayer.addChild(label);
     }
   }
 

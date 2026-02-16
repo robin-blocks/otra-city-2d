@@ -116,3 +116,23 @@ CREATE TABLE IF NOT EXISTS petition_votes (
     timestamp INTEGER NOT NULL,
     PRIMARY KEY (petition_id, resident_id)
 );
+
+-- === Shop stock ===
+
+CREATE TABLE IF NOT EXISTS shop_stock (
+    item_type TEXT PRIMARY KEY,
+    stock INTEGER NOT NULL DEFAULT 0,
+    last_restock INTEGER NOT NULL DEFAULT 0
+);
+
+-- Add shop_restock_timer column to world_state if not exists
+-- (SQLite doesn't support IF NOT EXISTS for ALTER TABLE, handled in code)
+
+-- === Law enforcement ===
+
+CREATE TABLE IF NOT EXISTS laws (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    sentence_game_hours INTEGER NOT NULL DEFAULT 2
+);

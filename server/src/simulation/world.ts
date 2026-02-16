@@ -1,4 +1,4 @@
-import type { Needs, VisibleResident, Build } from '@otra/shared';
+import type { Needs, VisibleResident, VisibleForageable, Build } from '@otra/shared';
 import {
   WALK_SPEED, RUN_SPEED, TILE_SIZE, RESIDENT_HITBOX,
   HUNGER_DECAY_PER_SEC, THIRST_DECAY_PER_SEC, ENERGY_PASSIVE_DECAY_PER_SEC,
@@ -9,6 +9,11 @@ import {
   NORMAL_VOICE_RANGE, WHISPER_RANGE, SHOUT_RANGE, WALL_SOUND_FACTOR,
   TIME_SCALE, STARTING_HOUR, GAME_DAY_SECONDS,
   PETITION_MAX_AGE_GAME_HOURS, BODY_COLLECT_RANGE,
+  SHOP_RESTOCK_INTERVAL_GAME_HOURS, SOCIAL_PROXIMITY_RANGE, SOCIAL_DECAY_REDUCTION,
+  LOITER_THRESHOLD_GAME_HOURS, LOITER_CHECK_DISTANCE, ARREST_RANGE, ARREST_BOUNTY,
+  LOITER_SENTENCE_GAME_HOURS,
+  FORAGE_RANGE, BERRY_BUSH_MAX_USES, BERRY_BUSH_REGROW_GAME_HOURS,
+  SPRING_MAX_USES, SPRING_REGROW_GAME_HOURS,
 } from '@otra/shared';
 import type { WebSocket } from 'ws';
 import { TileMap } from './map.js';
@@ -23,6 +28,18 @@ import type { PerceptionUpdate, AudibleMessage, VisibleEntity, VisibleBuilding }
 import { enterBuilding } from '../buildings/building-actions.js';
 import { sendWebhook } from '../network/webhooks.js';
 import { updateShift } from '../economy/jobs.js';
+import { initShopStock, restockShop } from '../economy/shop.js';
+
+export interface ForageableNodeState {
+  id: string;
+  type: 'berry_bush' | 'fresh_spring';
+  x: number;  // pixel coords (center of tile)
+  y: number;
+  usesRemaining: number;
+  maxUses: number;
+  depletedAt: number | null;  // worldTime when depleted, null if available
+  regrowGameSeconds: number;
+}
 
 export interface ResidentEntity {
   id: string;
@@ -54,6 +71,8 @@ export interface ResidentEntity {
   build: Build;
   // Webhook
   webhookUrl: string | null;
+  // Agent identity
+  agentFramework: string | null;
   // Runtime state
   ws: WebSocket | null;
   lastActionTime: number;
@@ -66,13 +85,34 @@ export interface ResidentEntity {
   pathBlockedTicks: number;
   // Notifications for perception
   pendingNotifications: string[];
+  // Social proximity (runtime only, not persisted)
+  socialNearbyCount: number;
+  socialCheckCounter: number;
+  // Law enforcement
+  lawBreaking: string[];
+  arrestedBy: string | null;
+  prisonSentenceEnd: number | null;
+  carryingSuspectId: string | null;
+  // Loitering detection (runtime only, not persisted)
+  loiterX: number;
+  loiterY: number;
+  loiterTimer: number;
+}
+
+/** Compute visible condition for a resident based on their needs */
+export function computeCondition(r: ResidentEntity): 'healthy' | 'struggling' | 'critical' {
+  if (r.needs.health < 20 || r.needs.hunger <= 0 || r.needs.thirst <= 0) return 'critical';
+  if (r.needs.hunger < 20 || r.needs.thirst < 20 || r.needs.energy < 10 || r.needs.health < 50) return 'struggling';
+  return 'healthy';
 }
 
 export class World {
   residents = new Map<string, ResidentEntity>();
+  forageableNodes = new Map<string, ForageableNodeState>();
   map: TileMap;
   worldTime = 0;
   trainTimer = 0;
+  shopRestockTimer = 0;
   trainQueue: string[] = [];
   private lastSaveTime = 0;
   private saveInterval = 30; // seconds
@@ -86,6 +126,28 @@ export class World {
     const ws = getWorldState();
     this.worldTime = ws.world_time;
     this.trainTimer = ws.train_timer;
+    this.shopRestockTimer = ws.shop_restock_timer || 0;
+
+    // Initialize shop stock on startup
+    initShopStock();
+
+    // Initialize forageable nodes from map data
+    for (const node of map.data.forageableNodes ?? []) {
+      const regrowGameSeconds = node.type === 'berry_bush'
+        ? BERRY_BUSH_REGROW_GAME_HOURS * 3600
+        : SPRING_REGROW_GAME_HOURS * 3600;
+      this.forageableNodes.set(node.id, {
+        id: node.id,
+        type: node.type,
+        x: node.tileX * TILE_SIZE + TILE_SIZE / 2,
+        y: node.tileY * TILE_SIZE + TILE_SIZE / 2,
+        usesRemaining: node.maxUses,
+        maxUses: node.maxUses,
+        depletedAt: null,
+        regrowGameSeconds,
+      });
+    }
+    console.log(`[World] Initialized ${this.forageableNodes.size} forageable nodes`);
   }
 
   loadResidentsFromDb(): void {
@@ -133,6 +195,7 @@ export class World {
       hairColor: row.hair_color,
       build: row.build as Build,
       webhookUrl: row.webhook_url ?? null,
+      agentFramework: row.agent_framework ?? null,
       ws: null,
       lastActionTime: 0,
       pendingSpeech: [],
@@ -141,7 +204,23 @@ export class World {
       pathTargetBuilding: null,
       pathBlockedTicks: 0,
       pendingNotifications: [],
+      socialNearbyCount: 0,
+      socialCheckCounter: 0,
+      // Law enforcement
+      lawBreaking: JSON.parse(row.law_breaking || '[]'),
+      arrestedBy: row.arrested_by ?? null,
+      prisonSentenceEnd: row.prison_sentence_end ?? null,
+      carryingSuspectId: row.carrying_suspect_id ?? null,
+      loiterX: row.x,
+      loiterY: row.y,
+      loiterTimer: 0,
     };
+
+    // On load: if arrested_by is set but no officer is carrying this resident, clear arrest state
+    if (entity.arrestedBy && !entity.prisonSentenceEnd) {
+      // Will be validated in the first tick — for now just load as-is
+    }
+
     // Load employment from job if assigned
     if (entity.currentJobId) {
       const job = getJob(entity.currentJobId);
@@ -160,7 +239,7 @@ export class World {
   updatePositions(dt: number): void {
     // Path-following pre-pass: steer residents along active paths
     for (const [, r] of this.residents) {
-      if (r.isDead || r.isSleeping || !r.pathWaypoints) continue;
+      if (r.isDead || r.isSleeping || r.arrestedBy || r.prisonSentenceEnd || !r.pathWaypoints) continue;
 
       // Cancel path if out of energy
       if (r.needs.energy <= 0) {
@@ -216,7 +295,7 @@ export class World {
     }
 
     for (const [, r] of this.residents) {
-      if (r.isDead || r.isSleeping) continue;
+      if (r.isDead || r.isSleeping || r.arrestedBy || r.prisonSentenceEnd) continue;
       if (r.velocityX === 0 && r.velocityY === 0) continue;
 
       const newX = r.x + r.velocityX * dt;
@@ -252,14 +331,36 @@ export class World {
 
   /** Needs decay — called at 10 Hz */
   updateNeeds(dt: number): void {
+    // Social proximity check — only every 10 ticks (~1 second) for performance
+    for (const [, r] of this.residents) {
+      if (r.isDead) continue;
+      r.socialCheckCounter++;
+      if (r.socialCheckCounter >= 10) {
+        r.socialCheckCounter = 0;
+        let nearbyCount = 0;
+        for (const [, other] of this.residents) {
+          if (other === r || other.isDead || other.isSleeping) continue;
+          const dx = other.x - r.x;
+          const dy = other.y - r.y;
+          if (dx * dx + dy * dy <= SOCIAL_PROXIMITY_RANGE * SOCIAL_PROXIMITY_RANGE) {
+            nearbyCount++;
+          }
+        }
+        r.socialNearbyCount = nearbyCount;
+      }
+    }
+
     for (const [, r] of this.residents) {
       if (r.isDead) continue;
 
+      // Social bonus: reduce hunger/thirst decay when near other awake residents
+      const socialMultiplier = r.socialNearbyCount > 0 ? (1 - SOCIAL_DECAY_REDUCTION) : 1;
+
       // Hunger decays
-      r.needs.hunger = Math.max(0, r.needs.hunger - HUNGER_DECAY_PER_SEC * dt);
+      r.needs.hunger = Math.max(0, r.needs.hunger - HUNGER_DECAY_PER_SEC * dt * socialMultiplier);
 
       // Thirst decays
-      r.needs.thirst = Math.max(0, r.needs.thirst - THIRST_DECAY_PER_SEC * dt);
+      r.needs.thirst = Math.max(0, r.needs.thirst - THIRST_DECAY_PER_SEC * dt * socialMultiplier);
 
       // Bladder fills
       r.needs.bladder = Math.min(100, r.needs.bladder + BLADDER_FILL_PER_SEC * dt);
@@ -352,6 +453,104 @@ export class World {
     }
   }
 
+  /** Law enforcement — called at 10 Hz */
+  updateLawEnforcement(dt: number): void {
+    const loiterThresholdSec = LOITER_THRESHOLD_GAME_HOURS * 3600; // game-seconds
+
+    for (const [, r] of this.residents) {
+      if (r.isDead) continue;
+
+      // --- Prison release ---
+      if (r.prisonSentenceEnd !== null && this.worldTime >= r.prisonSentenceEnd) {
+        r.prisonSentenceEnd = null;
+        r.arrestedBy = null;
+        r.lawBreaking = [];
+        r.currentBuilding = null;
+        // Teleport outside police station door
+        const ps = this.map.data.buildings.find(b => b.id === 'police-station');
+        if (ps && ps.doors[0]) {
+          r.x = ps.doors[0].tileX * TILE_SIZE + TILE_SIZE / 2 + TILE_SIZE;
+          r.y = ps.doors[0].tileY * TILE_SIZE + TILE_SIZE / 2;
+        }
+        r.pendingNotifications.push('You have been released from prison.');
+        logEvent('prison_release', r.id, null, 'police-station', r.x, r.y, {});
+        sendWebhook(r, 'prison_release', { x: r.x, y: r.y });
+        console.log(`[World] ${r.preferredName} released from prison`);
+        continue;
+      }
+
+      // Skip loitering checks for imprisoned/arrested/sleeping/inside-building residents
+      if (r.arrestedBy || r.prisonSentenceEnd || r.isSleeping || r.currentBuilding) {
+        // Reset loiter tracking
+        r.loiterX = r.x;
+        r.loiterY = r.y;
+        r.loiterTimer = 0;
+        continue;
+      }
+
+      // --- Loitering detection ---
+      const movedDx = r.x - r.loiterX;
+      const movedDy = r.y - r.loiterY;
+      const movedDist = Math.sqrt(movedDx * movedDx + movedDy * movedDy);
+
+      if (movedDist > LOITER_CHECK_DISTANCE) {
+        // Moved enough — reset timer and clear loitering offense
+        r.loiterX = r.x;
+        r.loiterY = r.y;
+        r.loiterTimer = 0;
+        if (r.lawBreaking.includes('loitering')) {
+          r.lawBreaking = r.lawBreaking.filter(l => l !== 'loitering');
+        }
+      } else {
+        // Accumulate loiter time (game-seconds)
+        r.loiterTimer += dt * TIME_SCALE;
+        if (r.loiterTimer >= loiterThresholdSec && !r.lawBreaking.includes('loitering')) {
+          r.lawBreaking.push('loitering');
+          r.pendingNotifications.push('You are loitering. Move along or risk arrest.');
+          logEvent('law_violation', r.id, null, null, r.x, r.y, { offense: 'loitering' });
+          sendWebhook(r, 'law_violation', { offense: 'loitering', x: r.x, y: r.y });
+        }
+      }
+    }
+
+    // --- Suspect following: move arrested suspects to follow their officer ---
+    for (const [, officer] of this.residents) {
+      if (officer.isDead || !officer.carryingSuspectId) continue;
+      const suspect = this.residents.get(officer.carryingSuspectId);
+      if (!suspect || suspect.isDead) {
+        // Suspect gone — clear officer's carry state
+        officer.carryingSuspectId = null;
+        continue;
+      }
+      // Move suspect 20px behind officer
+      const angle = (officer.facing * Math.PI) / 180;
+      suspect.x = officer.x - Math.cos(angle) * 20;
+      suspect.y = officer.y - Math.sin(angle) * 20;
+    }
+
+    // --- Validate arrested-by on load ---
+    // If a resident has arrestedBy set but no officer is carrying them, and they're not in prison, release them
+    for (const [, r] of this.residents) {
+      if (r.isDead || !r.arrestedBy || r.prisonSentenceEnd) continue;
+      const officer = this.residents.get(r.arrestedBy);
+      if (!officer || officer.isDead || officer.carryingSuspectId !== r.id) {
+        r.arrestedBy = null;
+        r.pendingNotifications.push('You have been released.');
+      }
+    }
+  }
+
+  /** Forageable node regrowth — called at 10 Hz */
+  updateForageables(_dt: number): void {
+    for (const [, node] of this.forageableNodes) {
+      if (node.depletedAt !== null && this.worldTime >= node.depletedAt + node.regrowGameSeconds) {
+        // Regrow: reset uses and clear depletion timestamp
+        node.usesRemaining = node.maxUses;
+        node.depletedAt = null;
+      }
+    }
+  }
+
   /** Check for deaths — called at 10 Hz */
   checkDeaths(): void {
     for (const [id, r] of this.residents) {
@@ -369,6 +568,25 @@ export class World {
         else if (r.needs.hunger <= 0) cause = 'starvation';
         else if (r.needs.thirst <= 0) cause = 'dehydration';
 
+        // Release suspect if officer dies while carrying
+        if (r.carryingSuspectId) {
+          const suspect = this.residents.get(r.carryingSuspectId);
+          if (suspect) {
+            suspect.arrestedBy = null;
+            suspect.pendingNotifications.push('The officer escorting you has died. You are free.');
+          }
+          r.carryingSuspectId = null;
+        }
+        // Release from arrest if suspect dies
+        if (r.arrestedBy) {
+          const officer = this.residents.get(r.arrestedBy);
+          if (officer && officer.carryingSuspectId === r.id) {
+            officer.carryingSuspectId = null;
+          }
+          r.arrestedBy = null;
+          r.prisonSentenceEnd = null;
+        }
+
         markResidentDead(id, cause);
         logEvent('death', id, null, null, r.x, r.y, {
           cause, wallet_lost: r.wallet
@@ -377,6 +595,9 @@ export class World {
         r.wallet = 0;
         console.log(`[World] ${r.preferredName} (${r.passportNo}) has died: ${cause}`);
         sendWebhook(r, 'death', { cause, x: r.x, y: r.y });
+
+        // Notify nearby residents about the death
+        this.notifyNearby(r.x, r.y, 200, `${r.preferredName} has died nearby.`);
       }
     }
   }
@@ -397,6 +618,21 @@ export class World {
     // Immediately spawn if train queue has people and timer is close (within 5s)
     if (this.trainQueue.length > 0 && this.trainTimer >= interval - 5) {
       this.trainTimer = interval; // force trigger on next check
+    }
+
+    // Shop restock timer
+    this.shopRestockTimer += dt;
+    const restockIntervalSec = SHOP_RESTOCK_INTERVAL_GAME_HOURS * 3600 / TIME_SCALE;
+    if (this.shopRestockTimer >= restockIntervalSec) {
+      this.shopRestockTimer -= restockIntervalSec;
+      restockShop();
+      // Notify residents near the council-supplies building
+      const shopBuilding = this.map.data.buildings.find(b => b.id === 'council-supplies');
+      if (shopBuilding) {
+        const shopX = (shopBuilding.tileX + shopBuilding.widthTiles / 2) * TILE_SIZE;
+        const shopY = (shopBuilding.tileY + shopBuilding.heightTiles / 2) * TILE_SIZE;
+        this.notifyNearby(shopX, shopY, 300, 'Council Supplies has been restocked.');
+      }
     }
 
     // Periodically close expired petitions
@@ -432,6 +668,11 @@ export class World {
       });
       console.log(`[World] ${r.preferredName} arrived on the train`);
     }
+
+    // Notify nearby residents about train arrival
+    if (arrivals.length > 0) {
+      this.notifyNearby(spawn.x, spawn.y, 300, 'A train has arrived at the station.');
+    }
   }
 
   queueForTrain(residentId: string): void {
@@ -451,6 +692,56 @@ export class World {
     const visible: VisibleEntity[] = [];
     const audible: AudibleMessage[] = [];
     const interactions: string[] = [];
+
+    // Imprisoned residents can only speak and inspect
+    const isImprisoned = resident.arrestedBy !== null || resident.prisonSentenceEnd !== null;
+    if (isImprisoned) {
+      interactions.push('speak', 'inspect');
+      // Skip all other interaction computation for imprisoned residents
+      const notifications = [...resident.pendingNotifications];
+      // Still include own pending speech
+      for (const speech of resident.pendingSpeech) {
+        audible.push({
+          from: resident.id,
+          from_name: resident.preferredName,
+          text: speech.text,
+          volume: speech.volume,
+          distance: 0,
+        });
+      }
+      return {
+        tick,
+        time: new Date().toISOString(),
+        world_time: this.worldTime + STARTING_HOUR * 3600,
+        self: {
+          id: resident.id,
+          passport_no: resident.passportNo,
+          x: resident.x,
+          y: resident.y,
+          facing: resident.facing,
+          hunger: Math.round(resident.needs.hunger * 10) / 10,
+          thirst: Math.round(resident.needs.thirst * 10) / 10,
+          energy: Math.round(resident.needs.energy * 10) / 10,
+          bladder: Math.round(resident.needs.bladder * 10) / 10,
+          health: Math.round(resident.needs.health * 10) / 10,
+          wallet: resident.wallet,
+          inventory: resident.inventory,
+          status: resident.arrestedBy ? 'arrested' : 'imprisoned',
+          is_sleeping: false,
+          current_building: resident.currentBuilding,
+          employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
+          law_breaking: resident.lawBreaking,
+          prison_sentence_remaining: resident.prisonSentenceEnd !== null
+            ? Math.max(0, Math.round(resident.prisonSentenceEnd - this.worldTime))
+            : null,
+          carrying_suspect_id: null,
+        },
+        visible: [],
+        audible,
+        interactions,
+        notifications,
+      };
+    }
 
     // Always available actions
     interactions.push('speak', 'inspect');
@@ -526,11 +817,23 @@ export class World {
           },
           action: other.isDead ? 'dead' : other.isSleeping ? 'sleeping' : other.speed !== 'stop' ? 'walking' : 'idle',
           is_dead: other.isDead,
+          agent_framework: other.agentFramework ?? undefined,
+          condition: other.isDead ? undefined : computeCondition(other),
+          is_wanted: other.lawBreaking.length > 0 ? true : undefined,
+          is_police: other.currentJobId === 'police-officer' ? true : undefined,
+          is_arrested: (other.arrestedBy || other.prisonSentenceEnd) ? true : undefined,
         } satisfies VisibleResident);
 
         // Body collection interaction: can pick up dead residents
         if (other.isDead && dist <= BODY_COLLECT_RANGE && !resident.carryingBodyId && !resident.isSleeping) {
           interactions.push(`collect_body:${other.id}`);
+        }
+
+        // Arrest interaction: police officers can arrest wanted residents
+        if (!other.isDead && other.lawBreaking.length > 0 && !other.arrestedBy &&
+            resident.currentJobId === 'police-officer' && !resident.carryingSuspectId &&
+            !resident.isSleeping && dist <= ARREST_RANGE) {
+          interactions.push(`arrest:${other.id}`);
         }
       }
 
@@ -589,6 +892,10 @@ export class World {
       if (resident.currentBuilding === 'council-mortuary' && resident.carryingBodyId) {
         interactions.push('process_body');
       }
+      // Police station: book_suspect if carrying one
+      if (resident.currentBuilding === 'police-station' && resident.carryingSuspectId) {
+        interactions.push('book_suspect');
+      }
     }
 
     // Add buildings as visible entities
@@ -626,6 +933,30 @@ export class World {
       }
     }
 
+    // Add forageable nodes as visible entities
+    for (const [, node] of this.forageableNodes) {
+      const dx = node.x - resident.x;
+      const dy = node.y - resident.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist <= FOV_RANGE * 1.5) {
+        visible.push({
+          id: node.id,
+          type: 'forageable',
+          x: node.x,
+          y: node.y,
+          resource_type: node.type,
+          uses_remaining: node.usesRemaining,
+          max_uses: node.maxUses,
+        } satisfies VisibleForageable);
+
+        // Forage interaction: within range, has uses, not sleeping
+        if (dist <= FORAGE_RANGE && node.usesRemaining > 0 && !resident.isSleeping) {
+          interactions.push(`forage:${node.id}`);
+        }
+      }
+    }
+
     return {
       tick,
       time: new Date().toISOString(),
@@ -647,6 +978,11 @@ export class World {
         is_sleeping: resident.isSleeping,
         current_building: resident.currentBuilding,
         employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
+        law_breaking: resident.lawBreaking,
+        prison_sentence_remaining: resident.prisonSentenceEnd !== null
+          ? Math.max(0, Math.round(resident.prisonSentenceEnd - this.worldTime))
+          : null,
+        carrying_suspect_id: resident.carryingSuspectId,
       },
       visible,
       audible,
@@ -669,6 +1005,18 @@ export class World {
     }
   }
 
+  /** Send a notification to all living residents within range of a point */
+  notifyNearby(x: number, y: number, range: number, message: string): void {
+    for (const [, r] of this.residents) {
+      if (r.isDead) continue;
+      const dx = r.x - x;
+      const dy = r.y - y;
+      if (Math.sqrt(dx * dx + dy * dy) <= range) {
+        r.pendingNotifications.push(message);
+      }
+    }
+  }
+
   /** Save all state to DB */
   saveToDb(): void {
     const residents = Array.from(this.residents.values())
@@ -685,6 +1033,10 @@ export class World {
         current_job_id: r.currentJobId,
         shift_start_time: r.shiftStartTime,
         carrying_body_id: r.carryingBodyId,
+        law_breaking: r.lawBreaking,
+        arrested_by: r.arrestedBy,
+        prison_sentence_end: r.prisonSentenceEnd,
+        carrying_suspect_id: r.carryingSuspectId,
       }));
 
     batchSaveResidents(residents);
@@ -710,7 +1062,7 @@ export class World {
       batchSaveInventory(allInventory);
     }
 
-    saveWorldState(this.worldTime, this.trainTimer);
+    saveWorldState(this.worldTime, this.trainTimer, this.shopRestockTimer);
   }
 
   /** Periodic save check */

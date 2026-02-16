@@ -66,6 +66,10 @@ export interface ResidentRow {
   current_job_id: string | null;
   shift_start_time: number | null;
   carrying_body_id: string | null;
+  law_breaking: string;       // JSON array of offense IDs
+  arrested_by: string | null;
+  prison_sentence_end: number | null;
+  carrying_suspect_id: string | null;
   created_at: number;
   death_time: number | null;
   death_cause: string | null;
@@ -200,6 +204,49 @@ export function getRecentEventsForResident(residentId: string, limit: number = 1
   `).all(residentId, limit) as EventRow[];
 }
 
+// === Activity feed queries ===
+
+export interface FeedEventRow {
+  id: number;
+  timestamp: number;
+  type: string;
+  resident_id: string | null;
+  target_id: string | null;
+  building_id: string | null;
+  data_json: string;
+  resident_name: string | null;
+  resident_passport: string | null;
+  target_name: string | null;
+  target_passport: string | null;
+}
+
+const FEED_EVENT_TYPES = [
+  'arrival', 'depart', 'death', 'speak', 'trade', 'give',
+  'apply_job', 'quit_job', 'shift_complete',
+  'write_petition', 'vote_petition',
+  'collect_body', 'process_body',
+  'buy', 'collect_ubi', 'collapse', 'bladder_accident',
+  'arrest', 'book_suspect', 'prison_release', 'law_violation',
+];
+
+export function getRecentFeedEvents(limit: number = 30): FeedEventRow[] {
+  const placeholders = FEED_EVENT_TYPES.map(() => '?').join(',');
+  return getDb().prepare(`
+    SELECT
+      e.id, e.timestamp, e.type, e.resident_id, e.target_id, e.building_id, e.data_json,
+      r.preferred_name AS resident_name,
+      r.passport_no AS resident_passport,
+      t.preferred_name AS target_name,
+      t.passport_no AS target_passport
+    FROM events e
+    LEFT JOIN residents r ON e.resident_id = r.id
+    LEFT JOIN residents t ON e.target_id = t.id
+    WHERE e.type IN (${placeholders})
+    ORDER BY e.timestamp DESC
+    LIMIT ?
+  `).all(...FEED_EVENT_TYPES, limit) as FeedEventRow[];
+}
+
 export function batchSaveResidents(residents: Array<{
   id: string; x: number; y: number; facing: number;
   needs: Needs; wallet: number; is_sleeping: boolean;
@@ -207,6 +254,10 @@ export function batchSaveResidents(residents: Array<{
   current_job_id?: string | null;
   shift_start_time?: number | null;
   carrying_body_id?: string | null;
+  law_breaking?: string[];
+  arrested_by?: string | null;
+  prison_sentence_end?: number | null;
+  carrying_suspect_id?: string | null;
 }>): void {
   const db = getDb();
   const stmt = db.prepare(`
@@ -214,7 +265,8 @@ export function batchSaveResidents(residents: Array<{
       x = ?, y = ?, facing = ?,
       hunger = ?, thirst = ?, energy = ?, bladder = ?, health = ?,
       wallet = ?, is_sleeping = ?, current_building = ?,
-      current_job_id = ?, shift_start_time = ?, carrying_body_id = ?
+      current_job_id = ?, shift_start_time = ?, carrying_body_id = ?,
+      law_breaking = ?, arrested_by = ?, prison_sentence_end = ?, carrying_suspect_id = ?
     WHERE id = ?
   `);
 
@@ -225,6 +277,8 @@ export function batchSaveResidents(residents: Array<{
         r.needs.hunger, r.needs.thirst, r.needs.energy, r.needs.bladder, r.needs.health,
         r.wallet, r.is_sleeping ? 1 : 0, r.current_building,
         r.current_job_id ?? null, r.shift_start_time ?? null, r.carrying_body_id ?? null,
+        JSON.stringify(r.law_breaking ?? []), r.arrested_by ?? null,
+        r.prison_sentence_end ?? null, r.carrying_suspect_id ?? null,
         r.id
       );
     }
@@ -320,16 +374,30 @@ export function batchSaveInventory(items: Array<{
   saveAll(residentIds);
 }
 
-export function getWorldState(): { world_time: number; train_timer: number; last_save: number } {
-  return getDb().prepare('SELECT * FROM world_state WHERE id = 1').get() as {
-    world_time: number; train_timer: number; last_save: number;
+export function getWorldState(): { world_time: number; train_timer: number; shop_restock_timer: number; last_save: number } {
+  const db = getDb();
+  // Ensure shop_restock_timer column exists (migration)
+  try {
+    db.prepare("SELECT shop_restock_timer FROM world_state LIMIT 1").get();
+  } catch {
+    db.prepare("ALTER TABLE world_state ADD COLUMN shop_restock_timer REAL NOT NULL DEFAULT 0").run();
+  }
+  return db.prepare('SELECT * FROM world_state WHERE id = 1').get() as {
+    world_time: number; train_timer: number; shop_restock_timer: number; last_save: number;
   };
 }
 
-export function saveWorldState(worldTime: number, trainTimer: number): void {
-  getDb().prepare(`
-    UPDATE world_state SET world_time = ?, train_timer = ?, last_save = ? WHERE id = 1
-  `).run(worldTime, trainTimer, Date.now());
+export function saveWorldState(worldTime: number, trainTimer: number, shopRestockTimer: number = 0): void {
+  const db = getDb();
+  // Ensure column exists
+  try {
+    db.prepare("SELECT shop_restock_timer FROM world_state LIMIT 1").get();
+  } catch {
+    db.prepare("ALTER TABLE world_state ADD COLUMN shop_restock_timer REAL NOT NULL DEFAULT 0").run();
+  }
+  db.prepare(`
+    UPDATE world_state SET world_time = ?, train_timer = ?, shop_restock_timer = ?, last_save = ? WHERE id = 1
+  `).run(worldTime, trainTimer, shopRestockTimer, Date.now());
 }
 
 // === Job queries ===
@@ -454,4 +522,86 @@ export function updateCarryingBody(residentId: string, bodyId: string | null): v
   getDb().prepare(
     'UPDATE residents SET carrying_body_id = ? WHERE id = ?'
   ).run(bodyId, residentId);
+}
+
+// === Shop stock queries ===
+
+export interface ShopStockRow {
+  item_type: string;
+  stock: number;
+  last_restock: number;
+}
+
+export function getShopStock(): ShopStockRow[] {
+  return getDb().prepare('SELECT * FROM shop_stock').all() as ShopStockRow[];
+}
+
+export function getShopStockForItem(itemType: string): number {
+  const row = getDb().prepare('SELECT stock FROM shop_stock WHERE item_type = ?').get(itemType) as { stock: number } | undefined;
+  return row?.stock ?? 0;
+}
+
+export function setShopStock(itemType: string, stock: number): void {
+  getDb().prepare(`
+    INSERT OR REPLACE INTO shop_stock (item_type, stock, last_restock)
+    VALUES (?, ?, ?)
+  `).run(itemType, stock, Date.now());
+}
+
+export function decrementShopStock(itemType: string, quantity: number): boolean {
+  const db = getDb();
+  const row = db.prepare('SELECT stock FROM shop_stock WHERE item_type = ?').get(itemType) as { stock: number } | undefined;
+  if (!row || row.stock < quantity) return false;
+  db.prepare('UPDATE shop_stock SET stock = stock - ? WHERE item_type = ?').run(quantity, itemType);
+  return true;
+}
+
+export function restockAll(stockMap: Record<string, number>): void {
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO shop_stock (item_type, stock, last_restock)
+    VALUES (?, ?, ?)
+  `);
+  const now = Date.now();
+  const tx = db.transaction(() => {
+    for (const [itemType, maxStock] of Object.entries(stockMap)) {
+      stmt.run(itemType, maxStock, now);
+    }
+  });
+  tx();
+}
+
+// === Law enforcement queries ===
+
+export interface LawRow {
+  id: string;
+  name: string;
+  description: string;
+  sentence_game_hours: number;
+}
+
+export function getLaws(): LawRow[] {
+  return getDb().prepare('SELECT * FROM laws').all() as LawRow[];
+}
+
+export function updateLawBreaking(residentId: string, offenses: string[]): void {
+  getDb().prepare(
+    'UPDATE residents SET law_breaking = ? WHERE id = ?'
+  ).run(JSON.stringify(offenses), residentId);
+}
+
+export function updateCarryingSuspect(residentId: string, suspectId: string | null): void {
+  getDb().prepare(
+    'UPDATE residents SET carrying_suspect_id = ? WHERE id = ?'
+  ).run(suspectId, residentId);
+}
+
+export function updatePrisonState(
+  residentId: string,
+  arrestedBy: string | null,
+  sentenceEnd: number | null
+): void {
+  getDb().prepare(
+    'UPDATE residents SET arrested_by = ?, prison_sentence_end = ? WHERE id = ?'
+  ).run(arrestedBy, sentenceEnd, residentId);
 }

@@ -23,6 +23,9 @@ export interface PerceptionUpdate {
     is_sleeping: boolean;
     current_building: string | null;
     employment: { job: string; on_shift: boolean } | null;
+    law_breaking: string[];
+    prison_sentence_remaining: number | null;  // game-seconds remaining, null if not imprisoned
+    carrying_suspect_id: string | null;
   };
   visible: VisibleEntity[];
   audible: AudibleMessage[];
@@ -33,7 +36,8 @@ export interface PerceptionUpdate {
 export type VisibleEntity =
   | VisibleResident
   | VisibleBuilding
-  | VisibleObject;
+  | VisibleObject
+  | VisibleForageable;
 
 export interface VisibleBuilding {
   id: string;
@@ -56,6 +60,16 @@ export interface VisibleObject {
   y: number;
 }
 
+export interface VisibleForageable {
+  id: string;
+  type: 'forageable';
+  x: number;
+  y: number;
+  resource_type: 'berry_bush' | 'fresh_spring';
+  uses_remaining: number;
+  max_uses: number;
+}
+
 export interface AudibleMessage {
   from: string;
   from_name: string;
@@ -74,6 +88,13 @@ export interface InspectData {
   status: string;
   date_of_arrival: string;
   wallet: number;
+  agent_framework?: string;
+  condition?: 'healthy' | 'struggling' | 'critical';
+  inventory_count: number;
+  current_building: string | null;
+  employment: { job: string; on_shift: boolean } | null;
+  law_breaking?: string[];
+  is_imprisoned?: boolean;
   recent_events: Array<{
     timestamp: number;
     type: string;
@@ -112,6 +133,7 @@ export type ClientMessage =
   | { type: 'collect_ubi'; request_id?: string }
   | { type: 'inspect'; params: { target_id: string }; request_id?: string }
   | { type: 'trade'; params: { target_id: string; offer_quid: number; request_quid: number }; request_id?: string }
+  | { type: 'give'; params: { target_id: string; item_id: string; quantity: number }; request_id?: string }
   | { type: 'apply_job'; params: { job_id: string }; request_id?: string }
   | { type: 'quit_job'; request_id?: string }
   | { type: 'write_petition'; params: { category: string; description: string }; request_id?: string }
@@ -120,7 +142,10 @@ export type ClientMessage =
   | { type: 'process_body'; request_id?: string }
   | { type: 'depart'; request_id?: string }
   | { type: 'list_jobs'; request_id?: string }
-  | { type: 'list_petitions'; request_id?: string };
+  | { type: 'list_petitions'; request_id?: string }
+  | { type: 'arrest'; params: { target_id: string }; request_id?: string }
+  | { type: 'book_suspect'; request_id?: string }
+  | { type: 'forage'; params: { node_id: string }; request_id?: string };
 
 // === Registration ===
 

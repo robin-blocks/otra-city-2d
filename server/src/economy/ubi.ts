@@ -11,6 +11,14 @@ export interface UbiResult {
 }
 
 export function collectUbi(resident: ResidentEntity): UbiResult {
+  // UBI has been discontinued — inform residents to forage instead
+  if (UBI_AMOUNT === 0) {
+    return {
+      success: false,
+      message: 'UBI has been discontinued. Forage wild berries and spring water in the wilderness to survive.',
+    };
+  }
+
   const now = Date.now();
   const elapsed = (now - resident.lastUbiCollection) / 1000;
 

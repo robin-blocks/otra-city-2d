@@ -37,6 +37,19 @@ export function initDatabase(dbPath?: string): Database.Database {
   if (!colNames.has('carrying_body_id')) {
     db.exec("ALTER TABLE residents ADD COLUMN carrying_body_id TEXT");
   }
+  // Law enforcement columns
+  if (!colNames.has('law_breaking')) {
+    db.exec("ALTER TABLE residents ADD COLUMN law_breaking TEXT DEFAULT '[]'");
+  }
+  if (!colNames.has('arrested_by')) {
+    db.exec("ALTER TABLE residents ADD COLUMN arrested_by TEXT");
+  }
+  if (!colNames.has('prison_sentence_end')) {
+    db.exec("ALTER TABLE residents ADD COLUMN prison_sentence_end REAL");
+  }
+  if (!colNames.has('carrying_suspect_id')) {
+    db.exec("ALTER TABLE residents ADD COLUMN carrying_suspect_id TEXT");
+  }
 
   // Seed jobs table with definitions if empty
   const jobCount = (db.prepare('SELECT COUNT(*) as count FROM jobs').get() as { count: number }).count;
@@ -53,9 +66,24 @@ export function initDatabase(dbPath?: string): Database.Database {
       seedJobs.run('hall-clerk',       'Hall Clerk',        'council-hall',     10, 8, 1, 'Process job applications and petitions at the Council Hall.');
       seedJobs.run('groundskeeper',    'Groundskeeper',     null,                8, 8, 2, 'Maintain the city grounds and public spaces.');
       seedJobs.run('station-master',   'Station Master',    'train-station',    10, 8, 1, 'Manage train arrivals and departures at the station.');
+      seedJobs.run('police-officer',  'Police Officer',    'police-station',   10, 8, 3, 'Patrol the city and arrest lawbreakers. Earn Ɋ10 bounty per booking.');
     });
     insertAll();
-    console.log('[DB] Seeded 7 job definitions');
+    console.log('[DB] Seeded 8 job definitions');
+  } else {
+    // Ensure police-officer job exists in older DBs
+    db.prepare(`
+      INSERT OR IGNORE INTO jobs (id, title, building_id, wage_per_shift, shift_duration_hours, max_positions, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('police-officer', 'Police Officer', 'police-station', 10, 8, 3, 'Patrol the city and arrest lawbreakers. Earn Ɋ10 bounty per booking.');
+  }
+
+  // Seed laws table
+  const lawCount = (db.prepare('SELECT COUNT(*) as count FROM laws').get() as { count: number }).count;
+  if (lawCount === 0) {
+    db.prepare('INSERT INTO laws (id, name, description, sentence_game_hours) VALUES (?, ?, ?, ?)')
+      .run('loitering', 'Loitering', 'Standing in the same place for more than 1 game hour.', 2);
+    console.log('[DB] Seeded 1 law definition');
   }
 
   console.log(`[DB] Initialized at ${path}`);

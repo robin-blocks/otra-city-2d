@@ -1,5 +1,6 @@
 import { Container, Graphics, Text, TextStyle, Rectangle } from 'pixi.js';
 import type { VisibleResident } from '@otra/shared';
+import { getFrameworkStyle } from '../ui/framework-colors.js';
 
 // Skin tone palette
 const SKIN_TONES = [0xfde0c0, 0xf5c89a, 0xe0a873, 0xc68642, 0x8d5524, 0x6b3a1f, 0x4a2511, 0x2d1507];
@@ -12,6 +13,7 @@ interface RenderedResident {
   container: Container;
   body: Graphics;
   nameTag: Text;
+  frameworkTag: Container | null;
   targetX: number;
   targetY: number;
   fadeStart: number | null; // timestamp when fade-out began, null = fully visible
@@ -24,6 +26,36 @@ const nameStyle = new TextStyle({
   align: 'center',
   dropShadow: { color: 0x000000, blur: 2, distance: 1 },
 });
+
+const frameworkTagStyle = new TextStyle({
+  fontFamily: 'Courier New',
+  fontSize: 7,
+  fill: 0xffffff,
+  align: 'center',
+});
+
+function createFrameworkTag(label: string, bgColor: number): Container {
+  const tagContainer = new Container();
+
+  const text = new Text({ text: label, style: frameworkTagStyle });
+  text.anchor.set(0.5, 0.5);
+
+  const paddingX = 4;
+  const paddingY = 1;
+  const bg = new Graphics();
+  bg.roundRect(
+    -text.width / 2 - paddingX,
+    -text.height / 2 - paddingY,
+    text.width + paddingX * 2,
+    text.height + paddingY * 2,
+    3,
+  );
+  bg.fill({ color: bgColor, alpha: 0.85 });
+
+  tagContainer.addChild(bg);
+  tagContainer.addChild(text);
+  return tagContainer;
+}
 
 export class ResidentRenderer {
   private parent: Container;
@@ -45,13 +77,16 @@ export class ResidentRenderer {
     selfAction: string,
     selfSkinTone: number,
     selfHairColor: number,
+    selfFramework: string | null,
+    selfCondition?: 'healthy' | 'struggling' | 'critical',
   ): void {
     const activeIds = new Set<string>();
 
     // Render self — snap directly to predicted position (no lerp needed)
     activeIds.add(selfId);
     this.renderResident(selfId, selfName, selfX, selfY, selfFacing, selfAction,
-      selfSkinTone, 0, selfHairColor, false, true);
+      selfSkinTone, 0, selfHairColor, false, true, selfFramework, selfCondition,
+      false, false, false);
 
     // Render visible others — set target, interpolate smoothly
     for (const r of visible) {
@@ -60,7 +95,8 @@ export class ResidentRenderer {
       this.renderResident(
         r.id, r.name, r.x, r.y, r.facing, r.action,
         r.appearance.skin_tone, r.appearance.hair_style, r.appearance.hair_color,
-        r.is_dead, false,
+        r.is_dead, false, r.agent_framework ?? null, r.condition,
+        r.is_police ?? false, r.is_wanted ?? false, r.is_arrested ?? false,
       );
     }
 
@@ -105,6 +141,9 @@ export class ResidentRenderer {
     facing: number, action: string,
     skinTone: number, hairStyle: number, hairColor: number,
     isDead: boolean, snap: boolean,
+    agentFramework: string | null,
+    condition?: 'healthy' | 'struggling' | 'critical',
+    isPolice?: boolean, isWanted?: boolean, isArrested?: boolean,
   ): void {
     let rr = this.rendered.get(id);
 
@@ -116,6 +155,16 @@ export class ResidentRenderer {
       nameTag.y = -20;
       container.addChild(body);
       container.addChild(nameTag);
+
+      // Framework tag (small colored label above name)
+      let frameworkTag: Container | null = null;
+      const fwStyle = getFrameworkStyle(agentFramework);
+      if (fwStyle) {
+        frameworkTag = createFrameworkTag(fwStyle.label, fwStyle.color);
+        frameworkTag.y = -34;
+        container.addChild(frameworkTag);
+      }
+
       this.parent.addChild(container);
       // Make clickable
       container.eventMode = 'static';
@@ -127,7 +176,7 @@ export class ResidentRenderer {
       // New residents snap to their initial position
       container.x = x;
       container.y = y;
-      rr = { container, body, nameTag, targetX: x, targetY: y, fadeStart: null };
+      rr = { container, body, nameTag, frameworkTag, targetX: x, targetY: y, fadeStart: null };
       this.rendered.set(id, rr);
     }
 
@@ -167,8 +216,9 @@ export class ResidentRenderer {
     } else {
       // Normal: head circle + body rectangle
       // Body
+      const clothingColor = isPolice ? 0x1a2a4a : 0x3355aa; // dark navy for police
       rr.body.rect(-6, -2, 12, 14);
-      rr.body.fill(0x3355aa); // clothing color
+      rr.body.fill(clothingColor);
 
       // Head
       rr.body.circle(0, -8, 7);
@@ -186,6 +236,37 @@ export class ResidentRenderer {
       rr.body.fill(0xffffff);
 
       rr.nameTag.text = name;
+
+      // Condition indicator dot
+      if (condition === 'struggling') {
+        rr.body.circle(8, 6, 3);
+        rr.body.fill(0xffcc00); // yellow
+      } else if (condition === 'critical') {
+        // Pulsing red dot (use time-based alpha)
+        const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 200);
+        rr.body.circle(8, 6, 3);
+        rr.body.fill({ color: 0xff3333, alpha: 0.5 + pulse * 0.5 });
+      }
+
+      // Police flashing light (alternating blue/red dot)
+      if (isPolice) {
+        const flashPhase = Math.sin(Date.now() / 300);
+        const flashColor = flashPhase > 0 ? 0x3366ff : 0xff3333;
+        rr.body.circle(-8, -16, 2.5);
+        rr.body.fill(flashColor);
+      }
+
+      // Wanted indicator (red dot)
+      if (isWanted && !isArrested) {
+        rr.body.circle(-10, 6, 3);
+        rr.body.fill(0xcc3333);
+      }
+
+      // Arrested/imprisoned indicator (gray circle)
+      if (isArrested) {
+        rr.body.circle(0, 16, 4);
+        rr.body.stroke({ width: 2, color: 0x888888 });
+      }
     }
   }
 }

@@ -48,6 +48,7 @@ export interface ResidentState {
   is_dead: boolean;
   current_building: string | null;
   employment: { job: string; on_shift: boolean } | null;
+  agent_framework?: string;
 }
 
 export interface VisibleResident {
@@ -65,4 +66,9 @@ export interface VisibleResident {
   };
   action: string;   // idle, walking, sleeping, working, dead
   is_dead: boolean;
+  agent_framework?: string;
+  condition?: 'healthy' | 'struggling' | 'critical';
+  is_wanted?: boolean;       // currently breaking a law
+  is_police?: boolean;       // employed as police officer
+  is_arrested?: boolean;     // arrested or imprisoned
 }

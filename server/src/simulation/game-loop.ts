@@ -51,10 +51,12 @@ export class GameLoop {
       this.posAccumulator -= this.POS_STEP;
     }
 
-    // Simulation ticks (10 Hz) — needs, economy, deaths
+    // Simulation ticks (10 Hz) — needs, economy, deaths, foraging
     while (this.simAccumulator >= this.SIM_STEP) {
       const dt = this.SIM_STEP / 1000;
       this.world.updateNeeds(dt);
+      this.world.updateLawEnforcement(dt);
+      this.world.updateForageables(dt);
       this.world.checkDeaths();
       this.world.updateTrain(dt);
       this.world.checkSave(dt);

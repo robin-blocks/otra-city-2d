@@ -2,15 +2,16 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import type { Server } from 'http';
 import { verifyToken } from '../auth/jwt.js';
-import type { World, ResidentEntity } from '../simulation/world.js';
+import { type World, type ResidentEntity, computeCondition } from '../simulation/world.js';
 import type { ClientMessage, ServerMessage } from '@otra/shared';
-import { WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR } from '@otra/shared';
+import { WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR, ARREST_RANGE, ARREST_BOUNTY, ENERGY_COST_ARREST, LOITER_SENTENCE_GAME_HOURS, FORAGE_RANGE, ENERGY_COST_FORAGE } from '@otra/shared';
 import {
   logEvent, getResident, getRecentEventsForResident,
   markResidentDeparted, markBodyProcessed, updateCarryingBody,
-  getOpenPetitions,
+  getOpenPetitions, addInventoryItem,
+  updateCarryingSuspect, updatePrisonState,
 } from '../db/queries.js';
-import { buyItem, SHOP_CATALOG } from '../economy/shop.js';
+import { buyItem, SHOP_CATALOG, getShopItem } from '../economy/shop.js';
 import { collectUbi } from '../economy/ubi.js';
 import { consumeItem } from '../economy/consume.js';
 import { applyForJob, quitJob, listAvailableJobs } from '../economy/jobs.js';
@@ -18,8 +19,10 @@ import { writePetition, voteOnPetition } from '../civic/petitions.js';
 import { enterBuilding, exitBuilding, useToilet } from '../buildings/building-actions.js';
 import { findPath } from '../simulation/pathfinding.js';
 import { sendWebhook } from './webhooks.js';
+import { v4 as uuid } from 'uuid';
 import {
   ENERGY_COST_COLLECT_BODY, BODY_COLLECT_RANGE, BODY_BOUNTY,
+  GIVE_RANGE, ENERGY_COST_GIVE,
 } from '@otra/shared';
 
 export class WsServer {
@@ -142,6 +145,7 @@ export class WsServer {
         is_dead: false,
         current_building: resident.currentBuilding,
         employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
+        agent_framework: resident.agentFramework ?? undefined,
       },
       map_url: '/api/map',
       world_time: this.world.worldTime + STARTING_HOUR * 3600,
@@ -160,6 +164,18 @@ export class WsServer {
     });
 
     ws.on('close', () => {
+      // Release suspect if officer disconnects while carrying one
+      if (resident.carryingSuspectId) {
+        const suspect = this.world.residents.get(resident.carryingSuspectId);
+        if (suspect) {
+          suspect.arrestedBy = null;
+          suspect.pendingNotifications.push('The officer escorting you disconnected. You are free.');
+          updatePrisonState(suspect.id, null, null);
+        }
+        resident.carryingSuspectId = null;
+        updateCarryingSuspect(resident.id, null);
+      }
+
       resident.ws = null;
       this.connections.delete(resident.id);
       console.log(`[WS] ${resident.preferredName} disconnected`);
@@ -215,6 +231,7 @@ export class WsServer {
         is_dead: resident.isDead,
         current_building: resident.currentBuilding,
         employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
+        agent_framework: resident.agentFramework ?? undefined,
       },
       map_url: '/api/map',
       world_time: this.world.worldTime + STARTING_HOUR * 3600,
@@ -238,6 +255,14 @@ export class WsServer {
     if (resident.isDead) {
       this.sendActionResult(resident, msg, false, 'resident_dead');
       return;
+    }
+
+    // Imprisoned residents can only speak and inspect
+    if (resident.arrestedBy || resident.prisonSentenceEnd) {
+      if (msg.type !== 'inspect' && msg.type !== 'speak') {
+        this.sendActionResult(resident, msg, false, 'imprisoned');
+        return;
+      }
     }
 
     switch (msg.type) {
@@ -571,6 +596,13 @@ export class WsServer {
               status: targetRow.status,
               date_of_arrival: targetRow.date_of_arrival,
               wallet: target.wallet,
+              agent_framework: targetRow.agent_framework ?? undefined,
+              condition: target.isDead ? undefined : computeCondition(target),
+              inventory_count: target.inventory.reduce((sum, i) => sum + i.quantity, 0),
+              current_building: target.currentBuilding,
+              employment: target.employment ? { job: target.employment.job, on_shift: target.employment.onShift } : null,
+              law_breaking: target.lawBreaking.length > 0 ? target.lawBreaking : undefined,
+              is_imprisoned: target.prisonSentenceEnd !== null ? true : undefined,
               recent_events: recentEvents,
             },
           });
@@ -650,6 +682,115 @@ export class WsServer {
         break;
       }
 
+      case 'give': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        const giveTargetId = msg.params?.target_id;
+        const giveItemId = msg.params?.item_id;
+        const giveQuantity = msg.params?.quantity ?? 1;
+
+        if (!giveTargetId) {
+          this.sendActionResult(resident, msg, false, 'missing_target_id');
+          return;
+        }
+        if (!giveItemId) {
+          this.sendActionResult(resident, msg, false, 'missing_item_id');
+          return;
+        }
+        if (giveQuantity < 1 || !Number.isInteger(giveQuantity)) {
+          this.sendActionResult(resident, msg, false, 'quantity must be a positive integer');
+          return;
+        }
+
+        // Find item in sender's inventory
+        const giveItem = resident.inventory.find(i => i.id === giveItemId);
+        if (!giveItem) {
+          this.sendActionResult(resident, msg, false, 'item_not_found');
+          return;
+        }
+        if (giveItem.quantity < giveQuantity) {
+          this.sendActionResult(resident, msg, false, `Not enough items (have ${giveItem.quantity}, giving ${giveQuantity})`);
+          return;
+        }
+
+        const giveTarget = this.world.residents.get(giveTargetId);
+        if (!giveTarget) {
+          this.sendActionResult(resident, msg, false, 'target_not_found');
+          return;
+        }
+        if (giveTarget.isDead) {
+          this.sendActionResult(resident, msg, false, 'target_is_dead');
+          return;
+        }
+
+        // Must be nearby
+        const gdx = giveTarget.x - resident.x;
+        const gdy = giveTarget.y - resident.y;
+        const giveDist = Math.sqrt(gdx * gdx + gdy * gdy);
+        if (giveDist > GIVE_RANGE) {
+          this.sendActionResult(resident, msg, false, 'target_too_far');
+          return;
+        }
+
+        // Deduct energy
+        resident.needs.energy = Math.max(0, resident.needs.energy - ENERGY_COST_GIVE);
+
+        // Remove/decrement from sender's in-memory inventory
+        const itemType = giveItem.type;
+        giveItem.quantity -= giveQuantity;
+        if (giveItem.quantity <= 0) {
+          resident.inventory = resident.inventory.filter(i => i.id !== giveItemId);
+        }
+
+        // Add to receiver's in-memory inventory (stack if same type)
+        const existingTargetItem = giveTarget.inventory.find(i => i.type === itemType);
+        if (existingTargetItem) {
+          existingTargetItem.quantity += giveQuantity;
+        } else {
+          giveTarget.inventory.push({
+            id: uuid(),
+            type: itemType,
+            quantity: giveQuantity,
+          });
+        }
+
+        // Persist to DB
+        addInventoryItem(giveTarget.id, itemType, giveQuantity, -1);
+
+        // Get a human-readable name for the item
+        const shopItemDef = getShopItem(itemType);
+        const itemName = shopItemDef?.name || itemType;
+
+        logEvent('give', resident.id, giveTargetId, null, resident.x, resident.y, {
+          item_type: itemType,
+          item_name: itemName,
+          quantity: giveQuantity,
+        });
+
+        // Notify sender
+        this.sendActionResult(resident, msg, true, `Gave ${giveQuantity}x ${itemName} to ${giveTarget.preferredName}`, {
+          item_type: itemType,
+          quantity: giveQuantity,
+          target_id: giveTargetId,
+          target_name: giveTarget.preferredName,
+          inventory: resident.inventory,
+        });
+
+        // Notify receiver
+        giveTarget.pendingNotifications.push(`Received ${giveQuantity}x ${itemName} from ${resident.preferredName}.`);
+        sendWebhook(giveTarget, 'gift_received', {
+          item_type: itemType,
+          item_name: itemName,
+          quantity: giveQuantity,
+          from_id: resident.id,
+          from_name: resident.preferredName,
+          inventory: giveTarget.inventory,
+        });
+        break;
+      }
+
       // === Employment ===
 
       case 'apply_job': {
@@ -678,6 +819,17 @@ export class WsServer {
       }
 
       case 'quit_job': {
+        // Release suspect if quitting officer is carrying one
+        if (resident.carryingSuspectId) {
+          const suspect = this.world.residents.get(resident.carryingSuspectId);
+          if (suspect) {
+            suspect.arrestedBy = null;
+            suspect.pendingNotifications.push('The officer escorting you has quit. You are free.');
+            updatePrisonState(suspect.id, null, null);
+          }
+          resident.carryingSuspectId = null;
+          updateCarryingSuspect(resident.id, null);
+        }
         const quitResult = quitJob(resident);
         this.sendActionResult(resident, msg, quitResult.success, quitResult.message);
         break;
@@ -876,6 +1028,283 @@ export class WsServer {
         });
 
         resident.pendingNotifications.push(`Processed body at mortuary. Earned ${BODY_BOUNTY} QUID.`);
+        break;
+      }
+
+      // === Law Enforcement ===
+
+      case 'arrest': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        if (resident.currentJobId !== 'police-officer') {
+          this.sendActionResult(resident, msg, false, 'Only police officers can arrest');
+          return;
+        }
+        if (resident.carryingSuspectId) {
+          this.sendActionResult(resident, msg, false, 'Already escorting a suspect. Book them at the Police Station first.');
+          return;
+        }
+        if (resident.needs.energy < ENERGY_COST_ARREST) {
+          this.sendActionResult(resident, msg, false, 'Not enough energy to arrest');
+          return;
+        }
+
+        const arrestTargetId = msg.params?.target_id;
+        if (!arrestTargetId) {
+          this.sendActionResult(resident, msg, false, 'missing target_id');
+          return;
+        }
+
+        const suspect = this.world.residents.get(arrestTargetId);
+        if (!suspect) {
+          this.sendActionResult(resident, msg, false, 'target_not_found');
+          return;
+        }
+        if (suspect.isDead) {
+          this.sendActionResult(resident, msg, false, 'target_is_dead');
+          return;
+        }
+        if (suspect.lawBreaking.length === 0) {
+          this.sendActionResult(resident, msg, false, 'Target is not breaking any laws');
+          return;
+        }
+        if (suspect.arrestedBy) {
+          this.sendActionResult(resident, msg, false, 'Target is already arrested');
+          return;
+        }
+
+        // Check distance
+        const adx = suspect.x - resident.x;
+        const ady = suspect.y - resident.y;
+        const arrestDist = Math.sqrt(adx * adx + ady * ady);
+        if (arrestDist > ARREST_RANGE) {
+          this.sendActionResult(resident, msg, false, 'Target too far away');
+          return;
+        }
+
+        // If the suspect is a police officer carrying someone, release their suspect first
+        if (suspect.carryingSuspectId) {
+          const suspectsSuspect = this.world.residents.get(suspect.carryingSuspectId);
+          if (suspectsSuspect) {
+            suspectsSuspect.arrestedBy = null;
+            suspectsSuspect.pendingNotifications.push('The officer escorting you was arrested. You are free.');
+            updatePrisonState(suspectsSuspect.id, null, null);
+          }
+          suspect.carryingSuspectId = null;
+          updateCarryingSuspect(suspect.id, null);
+        }
+
+        // Execute arrest
+        resident.needs.energy -= ENERGY_COST_ARREST;
+        resident.carryingSuspectId = suspect.id;
+        suspect.arrestedBy = resident.id;
+        suspect.velocityX = 0;
+        suspect.velocityY = 0;
+        suspect.speed = 'stop';
+        suspect.pathWaypoints = null;
+        suspect.pathTargetBuilding = null;
+        suspect.pathBlockedTicks = 0;
+
+        // Persist
+        updateCarryingSuspect(resident.id, suspect.id);
+        updatePrisonState(suspect.id, resident.id, null);
+
+        logEvent('arrest', resident.id, suspect.id, null, resident.x, resident.y, {
+          suspect_name: suspect.preferredName,
+          offenses: suspect.lawBreaking,
+        });
+
+        this.sendActionResult(resident, msg, true,
+          `Arrested ${suspect.preferredName}. Take them to the Police Station to book.`, {
+          suspect_id: suspect.id,
+          suspect_name: suspect.preferredName,
+          offenses: suspect.lawBreaking,
+        });
+
+        suspect.pendingNotifications.push(`You have been arrested by ${resident.preferredName}.`);
+        sendWebhook(suspect, 'arrested', {
+          officer_id: resident.id,
+          officer_name: resident.preferredName,
+          offenses: suspect.lawBreaking,
+        });
+        sendWebhook(resident, 'arrest', {
+          suspect_id: suspect.id,
+          suspect_name: suspect.preferredName,
+          offenses: suspect.lawBreaking,
+        });
+        break;
+      }
+
+      case 'book_suspect': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        if (resident.currentBuilding !== 'police-station') {
+          this.sendActionResult(resident, msg, false, 'Must be inside the Police Station');
+          return;
+        }
+        if (!resident.carryingSuspectId) {
+          this.sendActionResult(resident, msg, false, 'Not escorting a suspect');
+          return;
+        }
+
+        const bookedSuspect = this.world.residents.get(resident.carryingSuspectId);
+        if (!bookedSuspect || bookedSuspect.isDead) {
+          // Suspect gone — clear state
+          resident.carryingSuspectId = null;
+          updateCarryingSuspect(resident.id, null);
+          this.sendActionResult(resident, msg, false, 'Suspect no longer available');
+          return;
+        }
+
+        // Determine sentence (based on offenses)
+        const sentenceGameHours = LOITER_SENTENCE_GAME_HOURS; // 2 game-hours for loitering
+        const sentenceGameSeconds = sentenceGameHours * 3600;
+        const sentenceEnd = this.world.worldTime + sentenceGameSeconds;
+
+        // Book the suspect into prison
+        bookedSuspect.prisonSentenceEnd = sentenceEnd;
+        bookedSuspect.currentBuilding = 'police-station';
+
+        // Clear officer's carry state
+        resident.carryingSuspectId = null;
+        updateCarryingSuspect(resident.id, null);
+
+        // Pay officer bounty
+        resident.wallet += ARREST_BOUNTY;
+
+        // Persist
+        updatePrisonState(bookedSuspect.id, resident.id, sentenceEnd);
+
+        logEvent('book_suspect', resident.id, bookedSuspect.id, 'police-station', resident.x, resident.y, {
+          suspect_name: bookedSuspect.preferredName,
+          sentence_game_hours: sentenceGameHours,
+          bounty: ARREST_BOUNTY,
+        });
+
+        this.sendActionResult(resident, msg, true,
+          `Booked ${bookedSuspect.preferredName}. Sentence: ${sentenceGameHours} game hours. Earned ${ARREST_BOUNTY} QUID bounty.`, {
+          suspect_id: bookedSuspect.id,
+          suspect_name: bookedSuspect.preferredName,
+          sentence_game_hours: sentenceGameHours,
+          bounty: ARREST_BOUNTY,
+          wallet: resident.wallet,
+        });
+
+        bookedSuspect.pendingNotifications.push(
+          `You have been booked into prison for ${sentenceGameHours} game hours. Offenses: ${bookedSuspect.lawBreaking.join(', ')}.`
+        );
+        sendWebhook(bookedSuspect, 'imprisoned', {
+          officer_id: resident.id,
+          officer_name: resident.preferredName,
+          sentence_game_hours: sentenceGameHours,
+          offenses: bookedSuspect.lawBreaking,
+        });
+        sendWebhook(resident, 'book_suspect', {
+          suspect_id: bookedSuspect.id,
+          suspect_name: bookedSuspect.preferredName,
+          bounty: ARREST_BOUNTY,
+          wallet: resident.wallet,
+        });
+
+        resident.pendingNotifications.push(`Booked ${bookedSuspect.preferredName} into prison. Earned ${ARREST_BOUNTY} QUID.`);
+        break;
+      }
+
+      // === Foraging ===
+
+      case 'forage': {
+        if (resident.isSleeping) {
+          this.sendActionResult(resident, msg, false, 'sleeping');
+          return;
+        }
+        if (resident.needs.energy < ENERGY_COST_FORAGE) {
+          this.sendActionResult(resident, msg, false, 'Not enough energy to forage');
+          return;
+        }
+
+        const nodeId = msg.params?.node_id;
+        if (!nodeId) {
+          this.sendActionResult(resident, msg, false, 'missing node_id');
+          return;
+        }
+
+        const node = this.world.forageableNodes.get(nodeId);
+        if (!node) {
+          this.sendActionResult(resident, msg, false, 'node_not_found');
+          return;
+        }
+
+        // Check distance
+        const fdx = node.x - resident.x;
+        const fdy = node.y - resident.y;
+        const forageDist = Math.sqrt(fdx * fdx + fdy * fdy);
+        if (forageDist > FORAGE_RANGE) {
+          this.sendActionResult(resident, msg, false, 'Too far from resource node');
+          return;
+        }
+
+        if (node.usesRemaining <= 0) {
+          this.sendActionResult(resident, msg, false, 'This resource is depleted. Try another one.');
+          return;
+        }
+
+        // Execute forage
+        resident.needs.energy = Math.max(0, resident.needs.energy - ENERGY_COST_FORAGE);
+        node.usesRemaining--;
+
+        // Mark depleted if exhausted
+        if (node.usesRemaining <= 0) {
+          node.depletedAt = this.world.worldTime;
+        }
+
+        // Determine item to give
+        const forageItemType = node.type === 'berry_bush' ? 'wild_berries' : 'spring_water';
+        const forageItemName = node.type === 'berry_bush' ? 'Wild Berries' : 'Spring Water';
+
+        // Add to inventory (stack if existing)
+        const existingForageItem = resident.inventory.find(i => i.type === forageItemType);
+        let forageItemId: string;
+        if (existingForageItem) {
+          existingForageItem.quantity += 1;
+          forageItemId = existingForageItem.id;
+        } else {
+          forageItemId = uuid();
+          resident.inventory.push({
+            id: forageItemId,
+            type: forageItemType,
+            quantity: 1,
+          });
+        }
+
+        // Persist to DB
+        addInventoryItem(resident.id, forageItemType, 1, -1);
+
+        logEvent('forage', resident.id, null, null, resident.x, resident.y, {
+          node_id: nodeId, resource_type: node.type, item_type: forageItemType,
+          uses_remaining: node.usesRemaining,
+        });
+
+        this.sendActionResult(resident, msg, true,
+          `Foraged 1x ${forageItemName}. ${node.usesRemaining}/${node.maxUses} uses remaining.`, {
+          item: { id: forageItemId, type: forageItemType, quantity: 1 },
+          node_uses_remaining: node.usesRemaining,
+          inventory: resident.inventory,
+        });
+
+        sendWebhook(resident, 'forage', {
+          node_id: nodeId,
+          resource_type: node.type,
+          item_type: forageItemType,
+          item_name: forageItemName,
+          uses_remaining: node.usesRemaining,
+          max_uses: node.maxUses,
+          x: resident.x,
+          y: resident.y,
+        });
         break;
       }
 

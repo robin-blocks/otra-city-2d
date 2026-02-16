@@ -11,6 +11,7 @@ import { InputHandler } from './input.js';
 import { InventoryUI } from '../ui/inventory.js';
 import { ShopUI } from '../ui/shop.js';
 import { InspectUI } from '../ui/inspect.js';
+import { BuildingInfoUI } from '../ui/building-info.js';
 
 export class Game {
   private app!: Application;
@@ -27,6 +28,7 @@ export class Game {
   private inventoryUI!: InventoryUI;
   private shopUI!: ShopUI;
   private inspectUI!: InspectUI;
+  private buildingInfoUI!: BuildingInfoUI;
 
   // State
   private selfId = '';
@@ -38,6 +40,7 @@ export class Game {
   private selfAction = 'idle';
   private selfSkinTone = 0;
   private selfHairColor = 0;
+  private selfFramework: string | null = null;
   private lastPerception: PerceptionUpdate | null = null;
   private mapLoaded = false;
   private spectatorMode = false;
@@ -95,6 +98,9 @@ export class Game {
     this.inventoryUI = new InventoryUI(this.actions);
     this.shopUI = new ShopUI(this.actions);
     this.inspectUI = new InspectUI();
+    this.inspectUI.onHide = () => { this.input.uiOpen = false; };
+    this.buildingInfoUI = new BuildingInfoUI();
+    this.buildingInfoUI.onHide = () => { this.input.uiOpen = false; };
 
     // Click-to-inspect residents
     this.residentRenderer.onResidentClick = (residentId: string) => {
@@ -106,10 +112,20 @@ export class Game {
         } else {
           this.actions.inspect(residentId);
         }
-      } else if (!this.spectatorMode) {
-        // Other residents: only in player mode (spectators can't send messages)
+      } else if (this.spectatorMode) {
+        // Spectator clicking another resident: show limited info with spectate button
+        this.showOtherInspect(residentId);
+      } else {
+        // Player mode: full inspect via server
         this.actions.inspect(residentId);
       }
+    };
+
+    // Click-to-inspect buildings
+    this.mapRenderer.onBuildingClick = (buildingId: string) => {
+      if (this.input.uiOpen) return;
+      this.input.uiOpen = true;
+      this.buildingInfoUI.show(buildingId);
     };
 
     // Input
@@ -183,6 +199,7 @@ export class Game {
         this.selfFacing = resident.facing;
         this.selfSkinTone = resident.passport.skin_tone;
         this.selfHairColor = resident.passport.hair_color;
+        this.selfFramework = resident.agent_framework ?? null;
 
         // Init state-diff tracking
         this.prevSleeping = resident.is_sleeping;
@@ -328,6 +345,7 @@ export class Game {
         this.selfFacing = resident.facing;
         this.selfSkinTone = resident.passport.skin_tone;
         this.selfHairColor = resident.passport.hair_color;
+        this.selfFramework = resident.agent_framework ?? null;
 
         // Init state-diff tracking
         this.prevSleeping = resident.is_sleeping;
@@ -437,12 +455,19 @@ export class Game {
         (v): v is VisibleResident => v.type === 'resident'
       );
 
+      // Compute self condition from perception data
+      const self = this.lastPerception.self;
+      let selfCondition: 'healthy' | 'struggling' | 'critical' = 'healthy';
+      if (self.health < 20 || self.hunger <= 0 || self.thirst <= 0) selfCondition = 'critical';
+      else if (self.hunger < 20 || self.thirst < 20 || self.energy < 10 || self.health < 50) selfCondition = 'struggling';
+
       // Pass predicted position for self — this is instant
       this.residentRenderer.updateResidents(
         visibleResidents,
         this.selfId, this.selfName, this.predictedX, this.predictedY,
         this.selfFacing, this.selfAction,
         this.selfSkinTone, this.selfHairColor,
+        this.selfFramework, selfCondition,
       );
     }
 
@@ -497,6 +522,7 @@ export class Game {
       if (this.inventoryUI.isVisible()) this.inventoryUI.hide();
       if (this.shopUI.isVisible()) this.shopUI.hide();
       if (this.inspectUI.isVisible()) this.inspectUI.hide();
+      if (this.buildingInfoUI.isVisible()) this.buildingInfoUI.hide();
       this.input.uiOpen = false;
       return;
     }
@@ -656,7 +682,17 @@ export class Game {
 
   private showLocalInspect(): void {
     if (!this.selfPassport || !this.lastPerception) return;
-    this.inspectUI.showLocal(this.selfPassport, this.lastPerception.self);
+    this.inspectUI.showLocal(this.selfPassport, this.lastPerception.self, this.selfFramework);
+    this.input.uiOpen = true;
+  }
+
+  private showOtherInspect(residentId: string): void {
+    if (!this.lastPerception) return;
+    const resident = this.lastPerception.visible.find(
+      (v) => v.type === 'resident' && v.id === residentId,
+    );
+    if (!resident || resident.type !== 'resident') return;
+    this.inspectUI.showOther(resident);
     this.input.uiOpen = true;
   }
 

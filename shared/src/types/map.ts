@@ -14,6 +14,10 @@ export enum TileType {
   HEADSTONE = 12,
   TRAIN_TRACK = 13,
   PLATFORM = 14,
+  BUSH_BERRY = 15,
+  SPRING = 16,
+  BUSH_DEPLETED = 17,
+  SPRING_DRY = 18,
 }
 
 export interface BuildingDoor {
@@ -44,6 +48,14 @@ export interface BuildingPlacement {
   interiorObstacles: number[][];   // interior obstacles (0 = passable)
 }
 
+export interface ForageableNode {
+  id: string;
+  type: 'berry_bush' | 'fresh_spring';
+  tileX: number;
+  tileY: number;
+  maxUses: number;
+}
+
 export interface MapData {
   width: number;                   // tiles
   height: number;                  // tiles
@@ -51,5 +63,6 @@ export interface MapData {
   ground: number[][];              // [y][x] TileType
   obstacles: number[][];           // [y][x] 0 = passable, TileType = blocked
   buildings: BuildingPlacement[];
+  forageableNodes: ForageableNode[];
   spawnPoint: { x: number; y: number };  // px coords for train station exit
 }
