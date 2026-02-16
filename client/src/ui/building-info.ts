@@ -209,12 +209,12 @@ export class BuildingInfoUI {
   }
 
   private renderTrainStation(data: BuildingData): string {
-    const secs = data.next_train_seconds ?? 0;
-    const mins = Math.floor(secs / 60);
-    const remSecs = Math.floor(secs % 60);
-    const eta = `${mins}:${String(remSecs).padStart(2, '0')}`;
+    const gameSecs = data.next_train_seconds ?? 0;
+    const gameMins = Math.floor(gameSecs / 60);
+    const gameRemSecs = Math.floor(gameSecs % 60);
+    const eta = `${gameMins}m ${String(gameRemSecs).padStart(2, '0')}s`;
     return `
-      <div class="building-stat"><span class="building-stat-label">Next train:</span> <span class="building-stat-value">${eta}</span></div>
+      <div class="building-stat"><span class="building-stat-label">Next train:</span> <span class="building-stat-value">${eta} (game-time)</span></div>
       <div class="building-stat"><span class="building-stat-label">Residents queued:</span> <span class="building-stat-value">${data.queue_size ?? 0}</span></div>
       <div class="building-item-detail" style="margin-top:8px;">New residents arrive by train. Trains run every 15 game-minutes.</div>
     `;
