@@ -886,7 +886,8 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'missing petition_id');
           return;
         }
-        const voteResult = voteOnPetition(resident, petitionId);
+        const voteValue = msg.params?.vote || 'for';
+        const voteResult = voteOnPetition(resident, petitionId, voteValue);
         this.sendActionResult(resident, msg, voteResult.success, voteResult.message);
         break;
       }

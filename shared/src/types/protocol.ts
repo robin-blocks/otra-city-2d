@@ -139,7 +139,7 @@ export type ClientMessage =
   | { type: 'apply_job'; params: { job_id: string }; request_id?: string }
   | { type: 'quit_job'; request_id?: string }
   | { type: 'write_petition'; params: { category: string; description: string }; request_id?: string }
-  | { type: 'vote_petition'; params: { petition_id: string }; request_id?: string }
+  | { type: 'vote_petition'; params: { petition_id: string; vote?: 'for' | 'against' }; request_id?: string }
   | { type: 'collect_body'; params: { body_id: string }; request_id?: string }
   | { type: 'process_body'; request_id?: string }
   | { type: 'depart'; request_id?: string }

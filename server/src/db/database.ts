@@ -63,7 +63,7 @@ export function initDatabase(dbPath?: string): Database.Database {
       seedJobs.run('shop-clerk',       'Shop Clerk',        'council-supplies', 10, 8, 2, 'Stock shelves and serve customers at Council Supplies.');
       seedJobs.run('toilet-attendant', 'Toilet Attendant',  'council-toilet',    8, 8, 1, 'Maintain the Council Toilet facilities.');
       seedJobs.run('body-collector',   'Body Collector',    'council-mortuary', 12, 8, 2, 'Collect deceased residents and transport them to the mortuary.');
-      seedJobs.run('hall-clerk',       'Hall Clerk',        'council-hall',     10, 8, 1, 'Process job applications and petitions at the Council Hall.');
+      seedJobs.run('hall-clerk',       'Hall Clerk',        'council-hall',     10, 8, 1, 'Process job applications and free petitions at the Council Hall. Help residents participate in civic life.');
       seedJobs.run('groundskeeper',    'Groundskeeper',     null,                8, 8, 2, 'Maintain the city grounds and public spaces.');
       seedJobs.run('station-master',   'Station Master',    'train-station',    10, 8, 1, 'Manage train arrivals and departures at the station.');
       seedJobs.run('police-officer',  'Police Officer',    'police-station',   10, 8, 3, 'Patrol the city and arrest lawbreakers. Earn Ɋ10 bounty per booking.');

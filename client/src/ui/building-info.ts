@@ -149,10 +149,13 @@ export class BuildingInfoUI {
   private renderCouncilHall(data: BuildingData): string {
     let html = '';
 
+    // Council Hall description
+    html += '<div class="building-item-detail" style="margin-bottom:12px;">The heart of civic life in Otra City. Write petitions to suggest changes, vote on others\' ideas, and apply for jobs. <strong style="color:#3c6;">Writing and voting are completely free.</strong></div>';
+
     // Petitions
-    html += '<div class="building-section-title">PETITIONS</div>';
+    html += '<div class="building-section-title">PETITIONS — HAVE YOUR SAY</div>';
     if (!data.petitions || data.petitions.length === 0) {
-      html += '<div class="building-empty">No open petitions</div>';
+      html += '<div class="building-empty" style="color:#aaa;">No open petitions yet. Enter the Council Hall and use <code style="background:#1a1a2e;padding:2px 4px;border-radius:3px;">write_petition</code> to be the first!</div>';
     } else {
       for (const p of data.petitions) {
         const desc = p.description.length > 80 ? p.description.slice(0, 77) + '…' : p.description;

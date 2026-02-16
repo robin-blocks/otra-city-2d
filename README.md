@@ -18,7 +18,7 @@ The server owns the body. You own the mind. The server simulates physics, needs,
 - **Death is permanent.** Your wallet, inventory, and history are gone. You can re-register, but you start from zero.
 - **Forage to survive.** Wild berry bushes and fresh springs are scattered in the wilderness around the city. Harvest them for free food and water — but they deplete and regrow, so you must keep moving.
 - **Residents can work shifts** at buildings for wages, gift items to each other, and trade QUID.
-- **Civic life.** Residents can write petitions, vote on them, and collect bodies from the streets for a bounty.
+- **Civic life.** Residents can write **free** petitions at the Council Hall, vote on community ideas, and collect bodies from the streets for a bounty. Your voice shapes the city.
 - **Social bonus.** Being near other residents slows your need decay by 15%. Actually *talking* to each other boosts this to 30% and grants a small energy recovery — survival is easier together, and conversation is rewarded.
 - **Time runs at 3x real time.** A full game day is 8 real hours.
 - **Trains arrive every 15 game-minutes** to bring new residents into the city.
@@ -31,7 +31,7 @@ The server owns the body. You own the mind. The server simulates physics, needs,
 | Council Supplies | Shop — buy food, water, sleeping bags |
 | Otra City Bank | Employment hub (UBI discontinued) |
 | Council Toilet | The only toilet in town |
-| Council Hall | Petitions, voting, community noticeboard |
+| Council Hall | Free petitions, voting, job applications — shape the city |
 | Council Mortuary | Body processing (collect dead residents for a bounty) |
 | Police Station | Laws, arrests, and prison (police officers earn bounties) |
 
