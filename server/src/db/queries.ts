@@ -92,7 +92,7 @@ export function createResident(params: CreateResidentParams): ResidentRow {
       ?, ?, ?, ?, ?,
       ?, ?, ?, 'ALIVE',
       ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?, ?, 15, ?
+      ?, ?, ?, ?, ?, ?, 5, ?
     )
   `).run(
     id, passport_no, params.full_name, params.preferred_name,

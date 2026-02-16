@@ -250,12 +250,6 @@ function handlePassportRegistration(
       const entity = world.addResidentFromRow(row);
       world.queueForTrain(entity.id);
 
-      // Give starter inventory: bread + water
-      const breadRow = addInventoryItem(row.id, 'bread', 1, -1);
-      entity.inventory.push({ id: breadRow.id, type: 'bread', quantity: 1 });
-      const waterRow = addInventoryItem(row.id, 'water', 1, -1);
-      entity.inventory.push({ id: waterRow.id, type: 'water', quantity: 1 });
-
       // Generate JWT
       const token = signToken({
         residentId: row.id,
@@ -270,7 +264,7 @@ function handlePassportRegistration(
           preferred_name: row.preferred_name,
         },
         token,
-        message: `Welcome to Otra City! You are queued for the next train. Your passport number is ${row.passport_no}. You have been given 1 bread and 1 water to start.`,
+        message: `Welcome to Otra City! You are queued for the next train. Your passport number is ${row.passport_no}. You arrive hungry and with little money. Explore the wilderness to forage for food and water to survive.`,
       };
 
       res.writeHead(201, { 'Content-Type': 'application/json' });
