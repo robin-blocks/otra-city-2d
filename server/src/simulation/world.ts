@@ -605,7 +605,7 @@ export class World {
   /** Train timer — called at 10 Hz */
   updateTrain(dt: number): void {
     this.worldTime += dt * TIME_SCALE;
-    this.trainTimer += dt;
+    this.trainTimer += dt * TIME_SCALE;  // advance in game-time so trains run every 15 game-minutes
 
     // In dev mode, use a shorter train interval (30 seconds)
     const interval = process.env.NODE_ENV === 'production' ? TRAIN_INTERVAL_SEC : 30;
@@ -615,8 +615,8 @@ export class World {
       this.spawnTrainArrivals();
     }
 
-    // Immediately spawn if train queue has people and timer is close (within 5s)
-    if (this.trainQueue.length > 0 && this.trainTimer >= interval - 5) {
+    // Immediately spawn if train queue has people and timer is close (within 5 game-seconds)
+    if (this.trainQueue.length > 0 && this.trainTimer >= interval - 5 * TIME_SCALE) {
       this.trainTimer = interval; // force trigger on next check
     }
 
@@ -682,8 +682,9 @@ export class World {
     if (process.env.NODE_ENV !== 'production') {
       this.spawnTrainArrivals();
     } else {
-      const timeUntilTrain = TRAIN_INTERVAL_SEC - this.trainTimer;
-      console.log(`[World] ${residentId} queued for train (arriving in ${Math.ceil(timeUntilTrain)}s)`);
+      const gameSecsUntilTrain = TRAIN_INTERVAL_SEC - this.trainTimer;
+      const realSecsUntilTrain = gameSecsUntilTrain / TIME_SCALE;
+      console.log(`[World] ${residentId} queued for train (arriving in ${Math.ceil(realSecsUntilTrain)}s real / ${Math.ceil(gameSecsUntilTrain)}s game)`);
     }
   }
 

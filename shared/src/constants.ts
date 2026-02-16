@@ -63,7 +63,7 @@ export const UBI_COOLDOWN_SEC = 24 * 3600;    // 24 hours between collections
 export const STARTING_QUID = 5;              // reduced from 15 — emergency fund only
 
 // === Train ===
-export const TRAIN_INTERVAL_SEC = 15 * 60;    // 900 seconds = 15 minutes
+export const TRAIN_INTERVAL_SEC = 15 * 60;    // 900 game-seconds = 15 game-minutes (5 real minutes at 3x)
 
 // === Bladder accident ===
 export const BLADDER_ACCIDENT_FEE = 5;        // QUID cleaning fee

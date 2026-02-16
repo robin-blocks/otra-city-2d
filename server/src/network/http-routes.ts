@@ -120,7 +120,8 @@ export function handleHttpRequest(
     const petitions = getOpenPetitions();
     const jobs = listAvailableJobs();
     const interval = process.env.NODE_ENV === 'production' ? TRAIN_INTERVAL_SEC : 30;
-    const nextTrain = Math.max(0, interval - world.trainTimer);
+    const nextTrainGameSecs = Math.max(0, interval - world.trainTimer);
+    const nextTrain = nextTrainGameSecs;  // already in game-seconds since trainTimer now tracks game-time
     const uncollectedBodies = Array.from(world.residents.values())
       .filter(r => r.isDead).length;
 
