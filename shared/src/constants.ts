@@ -19,6 +19,7 @@ export const RESIDENT_HITBOX = 16;            // px — half a tile
 export const FOV_ANGLE = Math.PI / 2;         // 90 degrees
 export const FOV_RANGE = 200;                 // px ahead
 export const AMBIENT_RANGE = 150;             // px — 360° awareness (~5 tiles)
+export const NIGHT_VISION_MULTIPLIER = 0.6;   // 60% of normal vision range at full night
 export const WHISPER_RANGE = 30;              // px
 export const NORMAL_VOICE_RANGE = 300;        // px
 export const SHOUT_RANGE = 900;              // px

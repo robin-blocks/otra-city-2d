@@ -26,6 +26,7 @@ export interface CreateResidentParams {
   distinguishing_feature?: string;
   agent_framework?: string;
   webhook_url?: string;
+  bio?: string;
   api_key?: string;
   x: number;
   y: number;
@@ -50,6 +51,7 @@ export interface ResidentRow {
   distinguishing_feature: string;
   agent_framework: string | null;
   webhook_url: string | null;
+  bio: string;
   api_key: string | null;
   x: number;
   y: number;
@@ -87,12 +89,12 @@ export function createResident(params: CreateResidentParams): ResidentRow {
       id, passport_no, full_name, preferred_name, date_of_birth,
       place_of_origin, date_of_arrival, type, status,
       height_cm, build, hair_style, hair_color, eye_color, skin_tone,
-      distinguishing_feature, agent_framework, webhook_url, api_key, x, y, wallet, created_at
+      distinguishing_feature, agent_framework, webhook_url, bio, api_key, x, y, wallet, created_at
     ) VALUES (
       ?, ?, ?, ?, ?,
       ?, ?, ?, 'ALIVE',
       ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?, ?, 5, ?
+      ?, ?, ?, ?, ?, ?, ?, 5, ?
     )
   `).run(
     id, passport_no, params.full_name, params.preferred_name,
@@ -107,6 +109,7 @@ export function createResident(params: CreateResidentParams): ResidentRow {
     params.distinguishing_feature || '',
     params.agent_framework || null,
     params.webhook_url || null,
+    params.bio || '',
     params.api_key || null,
     params.x, params.y, now
   );
@@ -166,6 +169,10 @@ export function updateUbiCollection(id: string): void {
   getDb().prepare(`
     UPDATE residents SET last_ubi_collection = ? WHERE id = ?
   `).run(Date.now(), id);
+}
+
+export function updateResidentBio(id: string, bio: string): void {
+  getDb().prepare('UPDATE residents SET bio = ? WHERE id = ?').run(bio, id);
 }
 
 export function logEvent(

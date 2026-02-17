@@ -16,16 +16,14 @@ async function start() {
   const landing = document.getElementById('landing')!;
   const hud = document.getElementById('hud')!;
   const spectatorBanner = document.getElementById('spectator-banner')!;
+  const eventFeed = document.getElementById('event-feed')!;
+  const activityFeed = document.getElementById('activity-feed')!;
 
   // Check for ?follow= param (spectator mode)
   const urlParams = new URLSearchParams(window.location.search);
   const followPassport = urlParams.get('follow');
   if (followPassport) {
-    // Show loading state immediately in the landing modal
-    const landingBody = landing.querySelector('.landing-body') as HTMLElement;
-    if (landingBody) {
-      landingBody.innerHTML = `<p style="text-align:center; color:#888; margin-top:20px;">Connecting to <strong style="color:#3a7;">${escapeHtml(followPassport)}</strong>…</p>`;
-    }
+    landing.style.display = 'none';
 
     try {
       const res = await fetch(`/api/resident/${encodeURIComponent(followPassport)}`);
@@ -45,13 +43,11 @@ async function start() {
 
       await game.spectate(resident.id);
 
-      // Only reveal the spectator view once everything is loaded
-      landing.style.display = 'none';
       hud.style.display = 'block';
       spectatorBanner.style.display = 'block';
+      eventFeed.style.display = 'block';
     } catch (err) {
       console.error('Failed to spectate:', err);
-      landing.style.display = 'none';
       spectatorBanner.style.display = 'block';
       spectatorBanner.textContent = `Could not find resident ${followPassport}`;
     }
@@ -64,19 +60,22 @@ async function start() {
     try {
       landing.style.display = 'none';
       hud.style.display = 'block';
+      eventFeed.style.display = 'block';
       await game.connect(savedToken);
     } catch (err) {
       console.warn('Saved token invalid, showing landing');
       sessionStorage.removeItem('otra-token');
       landing.style.display = 'block';
       hud.style.display = 'none';
+      eventFeed.style.display = 'none';
     }
+    return;
   }
 
-  // Start activity feed if landing page is showing
-  if (landing.style.display !== 'none') {
-    startLandingFeed();
-  }
+  // Homepage: show landing panel + activity feed, auto-spectate
+  activityFeed.style.display = 'block';
+  startActivityFeed();
+  autoSpectate();
 }
 
 interface FeedEvent {
@@ -88,8 +87,52 @@ interface FeedEvent {
   text: string;
 }
 
-function startLandingFeed(): void {
-  const feedList = document.getElementById('landing-feed-list')!;
+async function autoSpectate(): Promise<void> {
+  const spectatorBanner = document.getElementById('spectator-banner')!;
+
+  try {
+    const res = await fetch('/api/feed');
+    if (!res.ok) { await game.loadMapOnly(); return; }
+    const { events } = (await res.json()) as { events: FeedEvent[] };
+
+    // Find first event with an actor that has a passport_no
+    for (const ev of events) {
+      if (!ev.actor?.passport_no) continue;
+
+      try {
+        const resRes = await fetch(`/api/resident/${encodeURIComponent(ev.actor.passport_no)}`);
+        if (!resRes.ok) continue;
+        const resident = await resRes.json();
+        if (resident.status !== 'ALIVE') continue;
+
+        // Build spectator banner
+        let bannerHtml = `Spectating: ${escapeHtml(resident.preferred_name)} (${escapeHtml(resident.passport_no)})`;
+        if (resident.agent_framework) {
+          const fwStyle = getFrameworkStyle(resident.agent_framework);
+          if (fwStyle) {
+            bannerHtml += ` <span style="background:${fwStyle.cssColor}; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px; color: #fff;">${escapeHtml(fwStyle.label)}</span>`;
+          }
+        }
+        bannerHtml += ` · <a href="/quick-start" class="spectator-cta">Connect your own bot →</a>`;
+        spectatorBanner.innerHTML = bannerHtml;
+
+        await game.spectate(resident.id);
+        spectatorBanner.style.display = 'block';
+        return;
+      } catch {
+        continue;
+      }
+    }
+
+    // No alive agents found — load map so visitors see the city
+    await game.loadMapOnly();
+  } catch {
+    try { await game.loadMapOnly(); } catch { /* ignore */ }
+  }
+}
+
+function startActivityFeed(): void {
+  const feedList = document.getElementById('activity-feed-list')!;
   if (!feedList) return;
 
   let lastEventId = 0;
@@ -130,7 +173,7 @@ function startLandingFeed(): void {
         return `<div class="feed-item${typeClass}"><span class="feed-time">${time}</span>${html}</div>`;
       }).join('');
     } catch {
-      // Silent fail — landing feed is non-critical
+      // Silent fail — activity feed is non-critical
     }
   }
 
@@ -138,15 +181,15 @@ function startLandingFeed(): void {
   fetchFeed();
   const intervalId = setInterval(fetchFeed, 8000);
 
-  // Stop polling if landing page is hidden (user navigates to spectate mode)
+  // Stop polling if activity feed is hidden
   const observer = new MutationObserver(() => {
-    const landing = document.getElementById('landing');
-    if (landing && landing.style.display === 'none') {
+    const el = document.getElementById('activity-feed');
+    if (el && el.style.display === 'none') {
       clearInterval(intervalId);
       observer.disconnect();
     }
   });
-  observer.observe(document.getElementById('landing')!, {
+  observer.observe(document.getElementById('activity-feed')!, {
     attributes: true, attributeFilter: ['style'],
   });
 }

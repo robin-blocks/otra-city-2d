@@ -1,5 +1,5 @@
 import { Application, Container } from 'pixi.js';
-import type { MapData, PerceptionUpdate, ResidentState, VisibleResident, AudibleMessage, Passport, InventoryItem } from '@otra/shared';
+import type { MapData, PerceptionUpdate, ResidentState, VisibleResident, VisibleEntity, AudibleMessage, Passport, InventoryItem } from '@otra/shared';
 import { WALK_SPEED, RUN_SPEED, QUID_SYMBOL, GAME_DAY_SECONDS, TIME_SCALE } from '@otra/shared';
 import { WsClient } from '../network/ws-client.js';
 import { ActionSender } from '../network/action-sender.js';
@@ -44,6 +44,21 @@ export class Game {
   private lastPerception: PerceptionUpdate | null = null;
   private mapLoaded = false;
   private spectatorMode = false;
+
+  // Spectator camera tracking
+  private originalFollowId = '';
+  private currentFollowId = '';
+  private currentFollowName = '';
+  private spectatorKeys = new Set<string>();
+  private lastVisible: VisibleEntity[] = [];
+
+  // Drag-to-scroll state
+  private dragPointerDown = false;
+  private dragMoved = false;
+  private dragStartScreenX = 0;
+  private dragStartScreenY = 0;
+  private dragStartFreeX = 0;
+  private dragStartFreeY = 0;
 
   // State-diff tracking for event feed
   private prevSleeping = false;
@@ -102,21 +117,27 @@ export class Game {
     this.buildingInfoUI = new BuildingInfoUI();
     this.buildingInfoUI.onHide = () => { this.input.uiOpen = false; };
 
-    // Click-to-inspect residents
+    // Click-to-inspect residents (player mode) / click-to-follow (spectator mode)
     this.residentRenderer.onResidentClick = (residentId: string) => {
       if (this.input.uiOpen) return;
-      if (residentId === this.selfId) {
-        // Self-click: in spectator mode show local passport; in player mode use server inspect
-        if (this.spectatorMode) {
-          this.showLocalInspect();
+      if (this.dragMoved) return; // Ignore clicks that were part of a drag
+
+      if (this.spectatorMode) {
+        // Spectator: click to inspect resident
+        if (residentId === this.selfId && this.selfPassport && this.lastPerception) {
+          this.input.uiOpen = true;
+          this.inspectUI.showLocal(this.selfPassport, this.lastPerception.self, this.selfFramework);
         } else {
-          this.actions.inspect(residentId);
+          const target = this.lastVisible.find(
+            v => v.type === 'resident' && v.id === residentId,
+          );
+          if (target && target.type === 'resident') {
+            this.input.uiOpen = true;
+            this.inspectUI.showOther(target);
+          }
         }
-      } else if (this.spectatorMode) {
-        // Spectator clicking another resident: show limited info with spectate button
-        this.showOtherInspect(residentId);
       } else {
-        // Player mode: full inspect via server
+        // Player mode: inspect via server
         this.actions.inspect(residentId);
       }
     };
@@ -326,8 +347,54 @@ export class Game {
     });
   }
 
+  async loadMapOnly(): Promise<void> {
+    if (this.mapLoaded) return;
+    try {
+      const res = await fetch('/api/map');
+      const mapData: MapData = await res.json();
+      this.mapRenderer.render(mapData);
+      this.mapLoaded = true;
+    } catch (err) {
+      console.error('[Game] Failed to load map:', err);
+    }
+  }
+
   async spectate(residentId: string): Promise<void> {
     this.spectatorMode = true;
+    this.input.spectatorMode = true; // Disable InputHandler key processing
+
+    // Movement keys that should be captured for camera panning
+    const movementKeys = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+
+    // Set up spectator keyboard listeners for camera panning
+    window.addEventListener('keydown', (e) => {
+      const key = e.key.toLowerCase();
+      this.spectatorKeys.add(key);
+      if (movementKeys.has(key)) {
+        e.preventDefault(); // Prevent page scrolling from arrow keys
+      }
+      if (e.key === 'Escape') {
+        if (this.inspectUI.isVisible()) this.inspectUI.hide();
+        if (this.buildingInfoUI.isVisible()) this.buildingInfoUI.hide();
+        this.input.uiOpen = false;
+      }
+    });
+    window.addEventListener('keyup', (e) => {
+      this.spectatorKeys.delete(e.key.toLowerCase());
+    });
+    // Prevent stuck keys when window loses focus
+    window.addEventListener('blur', () => {
+      this.spectatorKeys.clear();
+    });
+
+    // Bind re-centre button
+    const recentreBtn = document.getElementById('spectator-recentre');
+    if (recentreBtn) {
+      recentreBtn.addEventListener('click', () => this.recentre());
+    }
+
+    // Set up click-and-drag-to-scroll on canvas
+    this.setupDragToScroll();
 
     return new Promise((resolve, reject) => {
       this.wsClient.onWelcome = async (resident: ResidentState, mapUrl: string, worldTime: number) => {
@@ -346,6 +413,11 @@ export class Game {
         this.selfSkinTone = resident.passport.skin_tone;
         this.selfHairColor = resident.passport.hair_color;
         this.selfFramework = resident.agent_framework ?? null;
+
+        // Initialize spectator follow tracking
+        this.originalFollowId = resident.id;
+        this.currentFollowId = resident.id;
+        this.currentFollowName = resident.passport.preferred_name;
 
         // Init state-diff tracking
         this.prevSleeping = resident.is_sleeping;
@@ -378,6 +450,7 @@ export class Game {
 
       this.wsClient.onPerception = (data: PerceptionUpdate) => {
         this.lastPerception = data;
+        this.lastVisible = data.visible;
         this.worldTime = data.world_time;
         this.lastWorldTimeUpdate = performance.now();
 
@@ -418,6 +491,16 @@ export class Game {
 
         // Update spectator inventory panel
         this.updateSpectatorInventory(data.self.inventory, data.self.wallet);
+
+        // If following a non-original resident who is no longer visible, auto-recentre
+        if (this.currentFollowId !== this.originalFollowId) {
+          const stillVisible = data.visible.some(
+            v => v.type === 'resident' && v.id === this.currentFollowId,
+          );
+          if (!stillVisible) {
+            this.recentre();
+          }
+        }
       };
 
       this.wsClient.onError = (_code: string, message: string) => {
@@ -443,10 +526,41 @@ export class Game {
         this.predictedX += Math.cos(rad) * speed * dt;
         this.predictedY += Math.sin(rad) * speed * dt;
       }
+
+      // Player mode: always follow predicted position
+      this.camera.followPosition(this.predictedX, this.predictedY);
+    } else {
+      // Spectator mode: process camera panning from raw keys
+      let dx = 0, dy = 0;
+      if (this.spectatorKeys.has('w') || this.spectatorKeys.has('arrowup')) dy -= 1;
+      if (this.spectatorKeys.has('s') || this.spectatorKeys.has('arrowdown')) dy += 1;
+      if (this.spectatorKeys.has('a') || this.spectatorKeys.has('arrowleft')) dx -= 1;
+      if (this.spectatorKeys.has('d') || this.spectatorKeys.has('arrowright')) dx += 1;
+
+      if (dx !== 0 || dy !== 0) {
+        // Normalize diagonal movement
+        if (dx !== 0 && dy !== 0) {
+          const len = Math.sqrt(dx * dx + dy * dy);
+          dx /= len;
+          dy /= len;
+        }
+        this.camera.moveCamera(dx, dy, dt);
+        this.updateRecentreButton();
+      }
+
+      // Update follow target from perception data (without changing camera mode)
+      if (this.currentFollowId === this.originalFollowId) {
+        this.camera.updateFollowTarget(this.selfX, this.selfY);
+      } else {
+        const target = this.lastVisible.find(
+          v => v.type === 'resident' && v.id === this.currentFollowId,
+        );
+        if (target) {
+          this.camera.updateFollowTarget(target.x, target.y);
+        }
+      }
     }
 
-    // Update camera to follow predicted position (smooth)
-    this.camera.followPosition(this.predictedX, this.predictedY);
     this.camera.update(dt);
 
     // Update resident sprites from last perception
@@ -648,10 +762,6 @@ export class Game {
       if (interactions.includes('use_toilet')) {
         this.actions.useToilet();
       }
-      // Collect UBI
-      if (interactions.includes('collect_ubi')) {
-        this.actions.collectUbi();
-      }
       return;
     }
   }
@@ -667,9 +777,6 @@ export class Game {
 
       if (interactions.includes('buy')) {
         prompts.push('<span class="prompt-key">[B]</span> Shop');
-      }
-      if (interactions.includes('collect_ubi')) {
-        prompts.push('<span class="prompt-key">[U]</span> Collect UBI');
       }
       if (interactions.includes('use_toilet')) {
         prompts.push('<span class="prompt-key">[U]</span> Use Toilet');
@@ -792,6 +899,98 @@ export class Game {
       }
     }
     el.innerHTML = html;
+  }
+
+  /** Set up click-and-drag-to-scroll on the canvas (spectator mode only) */
+  private setupDragToScroll(): void {
+    const canvas = this.app.canvas;
+    canvas.style.cursor = 'grab';
+
+    const DRAG_THRESHOLD = 5; // pixels before drag activates
+
+    canvas.addEventListener('pointerdown', (e) => {
+      this.dragPointerDown = true;
+      this.dragMoved = false;
+      this.dragStartScreenX = e.clientX;
+      this.dragStartScreenY = e.clientY;
+      // Don't switch to free mode yet — wait for drag threshold
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!this.dragPointerDown) return;
+      const dx = e.clientX - this.dragStartScreenX;
+      const dy = e.clientY - this.dragStartScreenY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (!this.dragMoved && dist < DRAG_THRESHOLD) return; // Not a drag yet
+
+      if (!this.dragMoved) {
+        this.dragMoved = true;
+        canvas.style.cursor = 'grabbing';
+        // NOW switch to free mode and snapshot anchor
+        if (this.camera.getMode() === 'follow') {
+          this.camera.startFreeMode();
+        }
+        const pos = this.camera.getFreePosition();
+        this.dragStartFreeX = pos.x;
+        this.dragStartFreeY = pos.y;
+      }
+
+      // Invert: dragging right moves camera left in world space
+      this.camera.setFreePosition(
+        this.dragStartFreeX - dx,
+        this.dragStartFreeY - dy,
+      );
+      this.updateRecentreButton();
+    });
+
+    const endDrag = () => {
+      this.dragPointerDown = false;
+      canvas.style.cursor = 'grab';
+      // dragMoved stays true briefly so the pointerdown-based resident click handler
+      // can check it — it resets on the next pointerdown
+    };
+
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointerleave', endDrag);
+  }
+
+  /** Re-centre camera on the originally-followed resident */
+  private recentre(): void {
+    this.currentFollowId = this.originalFollowId;
+    this.currentFollowName = this.selfName;
+    this.camera.followPosition(this.selfX, this.selfY);
+    this.updateSpectatorBanner();
+    this.updateRecentreButton();
+  }
+
+  /** Show/hide the re-centre button based on current state */
+  private updateRecentreButton(): void {
+    const btn = document.getElementById('spectator-recentre');
+    if (!btn) return;
+    const showBtn = this.currentFollowId !== this.originalFollowId || this.camera.getMode() === 'free';
+    btn.style.display = showBtn ? 'block' : 'none';
+  }
+
+  /** Update spectator banner to reflect the currently-followed resident */
+  private updateSpectatorBanner(): void {
+    const banner = document.getElementById('spectator-banner');
+    if (!banner) return;
+
+    let html: string;
+    if (this.currentFollowId === this.originalFollowId) {
+      html = `Spectating: ${this.escapeHtml(this.selfName)}`;
+    } else {
+      html = `Spectating: ${this.escapeHtml(this.currentFollowName)}`;
+    }
+    html += ` · <a href="/quick-start" class="spectator-cta">Connect your own bot →</a>`;
+    banner.innerHTML = html;
+  }
+
+  private escapeHtml(text: string): string {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   private addEventFeedItem(text: string): void {

@@ -603,6 +603,7 @@ export class WsServer {
               date_of_arrival: targetRow.date_of_arrival,
               wallet: target.wallet,
               agent_framework: targetRow.agent_framework ?? undefined,
+              bio: targetRow.bio || undefined,
               condition: target.isDead ? undefined : computeCondition(target),
               inventory_count: target.inventory.reduce((sum, i) => sum + i.quantity, 0),
               current_building: target.currentBuilding,

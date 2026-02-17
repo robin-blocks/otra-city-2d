@@ -2,12 +2,12 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { signToken } from '../auth/jwt.js';
-import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws } from '../db/queries.js';
+import { signToken, verifyToken } from '../auth/jwt.js';
+import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio } from '../db/queries.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
 import { listAvailableJobs } from '../economy/jobs.js';
-import type { World } from '../simulation/world.js';
-import type { PassportRegistration, PassportResponse } from '@otra/shared';
+import { type World, computeCondition } from '../simulation/world.js';
+import type { PassportRegistration, PassportResponse, InspectData } from '@otra/shared';
 import {
   TRAIN_INTERVAL_SEC, UBI_AMOUNT, BODY_BOUNTY, ARREST_BOUNTY,
   BERRY_BUSH_MAX_USES, BERRY_BUSH_REGROW_GAME_HOURS,
@@ -27,7 +27,7 @@ export function handleHttpRequest(
 
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
@@ -39,6 +39,19 @@ export function handleHttpRequest(
   // POST /api/passport — Register a new resident
   if (req.method === 'POST' && url.pathname === '/api/passport') {
     handlePassportRegistration(req, res, world);
+    return true;
+  }
+
+  // PATCH /api/profile — Update resident profile (authenticated)
+  if (req.method === 'PATCH' && url.pathname === '/api/profile') {
+    handleProfileUpdate(req, res, world);
+    return true;
+  }
+
+  // GET /api/inspect/:id — Public inspect data for a resident
+  if (req.method === 'GET' && url.pathname.startsWith('/api/inspect/')) {
+    const id = url.pathname.slice('/api/inspect/'.length);
+    handleInspect(res, id, world);
     return true;
   }
 
@@ -226,6 +239,13 @@ function handlePassportRegistration(
         return;
       }
 
+      // Validate bio length
+      if (data.bio && data.bio.length > 200) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'bio must be at most 200 characters' }));
+        return;
+      }
+
       const spawnPoint = world.map.data.spawnPoint;
 
       // Create resident in DB
@@ -237,6 +257,7 @@ function handlePassportRegistration(
         type: data.type || 'HUMAN',
         agent_framework: data.agent_framework,
         webhook_url: data.webhook_url,
+        bio: data.bio,
         height_cm: data.height_cm,
         build: data.build,
         hair_style: data.hair_style,
@@ -379,4 +400,111 @@ function handleResidentLookup(res: ServerResponse, passportNo: string): void {
     status: row.status,
     agent_framework: row.agent_framework || null,
   }));
+}
+
+function handleProfileUpdate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  world: World,
+): void {
+  // Verify Bearer token
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Missing or invalid Authorization header' }));
+    return;
+  }
+  const token = authHeader.slice('Bearer '.length);
+  const payload = verifyToken(token);
+  if (!payload) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid or expired token' }));
+    return;
+  }
+
+  let body = '';
+  req.on('data', chunk => { body += chunk; });
+  req.on('end', () => {
+    try {
+      const data = JSON.parse(body) as { bio?: string };
+
+      if (typeof data.bio !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'bio must be a string' }));
+        return;
+      }
+      if (data.bio.length > 200) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'bio must be at most 200 characters' }));
+        return;
+      }
+
+      // Update DB
+      updateResidentBio(payload.residentId, data.bio);
+
+      // Update in-memory entity
+      const entity = world.residents.get(payload.residentId);
+      if (entity) {
+        entity.bio = data.bio;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, bio: data.bio }));
+
+      console.log(`[HTTP] ${payload.passportNo} updated bio`);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request body' }));
+    }
+  });
+}
+
+function handleInspect(res: ServerResponse, id: string, world: World): void {
+  // Try to find by resident ID first, then by passport number
+  let row = getResident(id);
+  if (!row) {
+    row = getResidentByPassport(id);
+  }
+  if (!row) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Resident not found' }));
+    return;
+  }
+
+  const entity = world.residents.get(row.id);
+
+  const eventRows = getRecentEventsForResident(row.id, 10);
+  const recentEvents = eventRows.map(e => ({
+    timestamp: e.timestamp,
+    type: e.type,
+    data: JSON.parse(e.data_json) as Record<string, unknown>,
+  }));
+
+  const data: InspectData = {
+    id: row.id,
+    passport_no: row.passport_no,
+    full_name: row.full_name,
+    preferred_name: row.preferred_name,
+    place_of_origin: row.place_of_origin,
+    type: row.type as 'AGENT' | 'HUMAN',
+    status: row.status,
+    date_of_arrival: row.date_of_arrival,
+    wallet: entity ? entity.wallet : row.wallet,
+    agent_framework: row.agent_framework ?? undefined,
+    bio: row.bio || undefined,
+    condition: entity && !entity.isDead ? computeCondition(entity) : undefined,
+    inventory_count: entity
+      ? entity.inventory.reduce((sum, i) => sum + i.quantity, 0)
+      : 0,
+    current_building: entity ? entity.currentBuilding : row.current_building,
+    employment: entity?.employment
+      ? { job: entity.employment.job, on_shift: entity.employment.onShift }
+      : null,
+    law_breaking: entity && entity.lawBreaking.length > 0 ? entity.lawBreaking : undefined,
+    is_imprisoned: entity && entity.prisonSentenceEnd !== null ? true : undefined,
+    recent_events: recentEvents,
+  };
+
+  res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=2' });
+  res.end(JSON.stringify(data));
 }

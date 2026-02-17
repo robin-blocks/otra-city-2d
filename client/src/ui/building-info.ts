@@ -3,8 +3,6 @@ interface BuildingData {
   items?: Array<{ name: string; price: number; stock: number; description: string }>;
   petitions?: Array<{ category: string; description: string; votes_for: number; votes_against: number }>;
   jobs?: Array<{ title: string; wage: number; shift_hours: number; openings: number; description: string }>;
-  ubi_amount?: number;
-  ubi_cooldown_hours?: number;
   alive_residents?: number;
   next_train_seconds?: number;
   queue_size?: number;
@@ -198,8 +196,6 @@ export class BuildingInfoUI {
 
   private renderBank(data: BuildingData): string {
     return `
-      <div class="building-stat"><span class="building-stat-label">UBI payout:</span> <span class="building-stat-value">Ɋ${data.ubi_amount ?? 15} per day</span></div>
-      <div class="building-stat"><span class="building-stat-label">Cooldown:</span> <span class="building-stat-value">${data.ubi_cooldown_hours ?? 24} hours between collections</span></div>
       <div class="building-stat"><span class="building-stat-label">Alive residents:</span> <span class="building-stat-value">${data.alive_residents ?? '?'}</span></div>
     `;
   }

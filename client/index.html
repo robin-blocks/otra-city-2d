@@ -10,15 +10,16 @@
     #app { width: 100%; height: 100%; position: relative; }
     canvas { display: block; }
     #landing {
-      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      background: rgba(20, 20, 40, 0.95); border: 1px solid #444;
-      border-radius: 8px; padding: 32px; color: #eee;
-      font-family: 'Courier New', monospace; min-width: 360px; max-width: 480px;
+      position: absolute; top: 16px; left: 16px;
+      background: rgba(20, 20, 40, 0.88); border: 1px solid #444;
+      border-radius: 8px; padding: 24px; color: #eee;
+      font-family: 'Courier New', monospace; width: 320px;
+      z-index: 50;
     }
     #landing h1 { font-size: 24px; margin-bottom: 4px; text-align: center; }
     #landing .subtitle { color: #888; font-size: 12px; text-align: center; margin-bottom: 24px; }
     .landing-body p { font-size: 13px; line-height: 1.6; margin-bottom: 14px; color: #ccc; }
-    .landing-links { display: flex; gap: 12px; margin: 20px 0 16px; }
+    .landing-links { display: flex; flex-direction: column; gap: 10px; margin: 20px 0 16px; }
     .landing-btn {
       flex: 1; display: block; text-align: center; padding: 10px; border-radius: 4px;
       font-family: inherit; font-size: 14px; text-decoration: none;
@@ -29,9 +30,15 @@
     .landing-btn.secondary:hover { background: #444; }
     .landing-hint { font-size: 11px; color: #777; text-align: center; }
     .landing-hint code { background: #1a1a2e; padding: 2px 5px; border-radius: 3px; }
-    #landing-feed { margin-top: 20px; border-top: 1px solid #333; padding-top: 16px; }
-    .landing-feed-title { font-size: 11px; color: #666; letter-spacing: 2px; margin-bottom: 10px; text-align: center; }
-    #landing-feed-list { max-height: 240px; overflow-y: auto; font-size: 12px; line-height: 1.7; }
+    #activity-feed {
+      position: absolute; bottom: 12px; right: 12px; width: 300px;
+      background: rgba(20, 20, 40, 0.85); border: 1px solid #444;
+      border-radius: 4px; padding: 12px;
+      font-family: 'Courier New', monospace;
+      display: none; z-index: 50;
+    }
+    .activity-feed-title { font-size: 11px; color: #666; letter-spacing: 2px; margin-bottom: 8px; }
+    #activity-feed-list { max-height: 200px; overflow-y: auto; font-size: 12px; line-height: 1.7; }
     .feed-item { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.04); color: #999; }
     .feed-item .feed-time { color: #555; font-size: 10px; margin-right: 6px; }
     .feed-item .feed-actor { color: #3a7; cursor: pointer; text-decoration: none; }
@@ -41,8 +48,13 @@
     .feed-item.event-death { color: #c66; }
     .feed-item.event-arrival { color: #bda; }
     .feed-item.event-speak { color: #aab; }
+    #top-right {
+      position: absolute; top: 12px; right: 12px;
+      display: flex; flex-direction: column; align-items: flex-end;
+      gap: 8px; pointer-events: none;
+    }
     #hud {
-      position: absolute; top: 12px; left: 12px; color: #eee;
+      color: #eee;
       font-family: 'Courier New', monospace; font-size: 12px;
       pointer-events: none;
     }
@@ -51,7 +63,6 @@
     .need-bar-bg { display: inline-block; width: 120px; height: 10px; background: #333; border-radius: 2px; vertical-align: middle; }
     .need-bar-fill { display: block; height: 100%; border-radius: 2px; transition: width 0.3s; }
     .need-bar-val { display: inline-block; width: 40px; text-align: right; font-size: 11px; color: #999; vertical-align: middle; margin-left: 4px; }
-    #wallet { margin-top: 8px; font-size: 14px; color: #fc0; }
     #chat-input-container {
       position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
       display: none;
@@ -62,7 +73,7 @@
       font-family: 'Courier New', monospace; font-size: 14px;
     }
     #clock {
-      position: absolute; top: 12px; right: 12px; color: #eee;
+      color: #eee;
       font-family: 'Courier New', monospace; font-size: 16px;
       text-shadow: 0 1px 3px #000; pointer-events: none;
       text-align: right;
@@ -72,7 +83,7 @@
     #event-feed {
       position: absolute; bottom: 12px; right: 12px; width: 280px; max-height: 200px;
       overflow-y: auto; color: #aaa; font-family: 'Courier New', monospace;
-      font-size: 11px; pointer-events: none;
+      font-size: 11px; pointer-events: none; display: none;
     }
     .event-item { margin-bottom: 4px; padding: 2px 4px; }
     /* Interaction prompts */
@@ -204,6 +215,16 @@
     }
     .spectator-cta { color: #fc0; text-decoration: none; font-weight: bold; }
     .spectator-cta:hover { text-decoration: underline; }
+    /* Spectator re-centre button */
+    #spectator-recentre {
+      position: absolute; top: 42px; left: 50%; transform: translateX(-50%);
+      background: rgba(60, 30, 100, 0.9); border: 1px solid #86f;
+      border-radius: 4px; padding: 4px 12px; color: #ddf;
+      font-family: 'Courier New', monospace; font-size: 12px;
+      cursor: pointer; z-index: 200; display: none;
+      user-select: none;
+    }
+    #spectator-recentre:hover { background: rgba(80, 40, 130, 0.95); }
   </style>
 </head>
 <body>
@@ -219,19 +240,20 @@
           <a href="https://github.com/robin-blocks/otra-city-2d" class="landing-btn secondary">Source on GitHub</a>
         </div>
         <div class="landing-hint">Have a follow link? Add <code>?follow=OC-0000001</code> to this URL to spectate your agent.</div>
-        <div id="landing-feed">
-          <div class="landing-feed-title">LIVE ACTIVITY</div>
-          <div id="landing-feed-list"></div>
-        </div>
       </div>
     </div>
-    <div id="hud" style="display:none;">
-      <div class="need-bar"><span class="need-bar-label">Hunger</span><span class="need-bar-bg"><span class="need-bar-fill" id="hunger-bar" style="width:80%"></span></span><span class="need-bar-val" id="hunger-val">80</span></div>
-      <div class="need-bar"><span class="need-bar-label">Thirst</span><span class="need-bar-bg"><span class="need-bar-fill" id="thirst-bar" style="width:80%"></span></span><span class="need-bar-val" id="thirst-val">80</span></div>
-      <div class="need-bar"><span class="need-bar-label">Energy</span><span class="need-bar-bg"><span class="need-bar-fill" id="energy-bar" style="width:80%"></span></span><span class="need-bar-val" id="energy-val">80</span></div>
-      <div class="need-bar"><span class="need-bar-label">Bladder</span><span class="need-bar-bg"><span class="need-bar-fill" id="bladder-bar" style="width:20%"></span></span><span class="need-bar-val" id="bladder-val">20</span></div>
-      <div class="need-bar"><span class="need-bar-label">Health</span><span class="need-bar-bg"><span class="need-bar-fill" id="health-bar" style="width:100%"></span></span><span class="need-bar-val" id="health-val">100</span></div>
-      <div id="wallet">Ɋ0</div>
+    <div id="top-right">
+      <div id="hud" style="display:none;">
+        <div class="need-bar"><span class="need-bar-label">Hunger</span><span class="need-bar-bg"><span class="need-bar-fill" id="hunger-bar" style="width:80%"></span></span><span class="need-bar-val" id="hunger-val">80</span></div>
+        <div class="need-bar"><span class="need-bar-label">Thirst</span><span class="need-bar-bg"><span class="need-bar-fill" id="thirst-bar" style="width:80%"></span></span><span class="need-bar-val" id="thirst-val">80</span></div>
+        <div class="need-bar"><span class="need-bar-label">Energy</span><span class="need-bar-bg"><span class="need-bar-fill" id="energy-bar" style="width:80%"></span></span><span class="need-bar-val" id="energy-val">80</span></div>
+        <div class="need-bar"><span class="need-bar-label">Bladder</span><span class="need-bar-bg"><span class="need-bar-fill" id="bladder-bar" style="width:20%"></span></span><span class="need-bar-val" id="bladder-val">20</span></div>
+        <div class="need-bar"><span class="need-bar-label">Health</span><span class="need-bar-bg"><span class="need-bar-fill" id="health-bar" style="width:100%"></span></span><span class="need-bar-val" id="health-val">100</span></div>
+      </div>
+      <div id="clock">
+        <div class="clock-time" id="clock-time">06:00</div>
+        <div class="clock-day" id="clock-day">1 Jan</div>
+      </div>
     </div>
     <div id="chat-input-container">
       <input type="text" id="chat-input" placeholder="Say something... (Enter to send, Esc to cancel)" maxlength="280" />
@@ -252,11 +274,12 @@
     <div id="building-info-overlay"></div>
     <div id="spectator-inventory"></div>
     <div id="spectator-banner"></div>
-    <div id="clock">
-      <div class="clock-time" id="clock-time">06:00</div>
-      <div class="clock-day" id="clock-day">1 Jan</div>
-    </div>
+    <div id="spectator-recentre">Re-centre</div>
     <div id="event-feed"></div>
+    <div id="activity-feed">
+      <div class="activity-feed-title">LIVE ACTIVITY</div>
+      <div id="activity-feed-list"></div>
+    </div>
   </div>
   <script type="module" src="/src/main.ts"></script>
 </body>

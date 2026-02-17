@@ -13,6 +13,8 @@ export class InputHandler {
   onHotkey: ((key: string) => void) | null = null;
   /** Whether a UI overlay is open (blocks movement but not hotkeys) */
   uiOpen = false;
+  /** When true, skip all input processing (spectator has its own handlers) */
+  spectatorMode = false;
 
   constructor(private actions: ActionSender) {
     window.addEventListener('keydown', this.onKeyDown);
@@ -20,6 +22,9 @@ export class InputHandler {
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
+    // In spectator mode, skip all input processing
+    if (this.spectatorMode) return;
+
     // Chat input handling
     if (this.chatActive) {
       if (e.key === 'Escape') {

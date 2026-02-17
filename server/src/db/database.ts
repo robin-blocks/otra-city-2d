@@ -50,6 +50,9 @@ export function initDatabase(dbPath?: string): Database.Database {
   if (!colNames.has('carrying_suspect_id')) {
     db.exec("ALTER TABLE residents ADD COLUMN carrying_suspect_id TEXT");
   }
+  if (!colNames.has('bio')) {
+    db.exec("ALTER TABLE residents ADD COLUMN bio TEXT DEFAULT ''");
+  }
 
   // Seed jobs table with definitions if empty
   const jobCount = (db.prepare('SELECT COUNT(*) as count FROM jobs').get() as { count: number }).count;

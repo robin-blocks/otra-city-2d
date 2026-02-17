@@ -86,12 +86,39 @@ export class InspectUI {
     this.overlay.innerHTML = html;
   }
 
-  /** Show a simplified inspect for another resident in spectator mode (limited data, with spectate button) */
+  /** Show inspect for another resident in spectator mode — fetches full data from server */
   showOther(resident: VisibleResident): void {
     this.visible = true;
     this.showTime = Date.now();
     this.overlay.style.display = 'block';
 
+    // Show loading state immediately
+    this.overlay.innerHTML = `
+      <div class="inspect-header">
+        <div class="inspect-name">${this.escape(resident.name)}</div>
+      </div>
+      <div class="inspect-details">
+        <div class="inspect-row" style="color:#888">Loading...</div>
+      </div>
+    `;
+
+    // Fetch full inspect data from server
+    fetch(`/api/inspect/${encodeURIComponent(resident.id)}`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error('fetch failed')))
+      .then((data: InspectData) => {
+        if (!this.visible) return; // user closed panel while loading
+        this.render(data);
+        this.appendSpectateButton(resident.id, data.preferred_name);
+      })
+      .catch(() => {
+        if (!this.visible) return;
+        // Fallback to local data
+        this.renderLocalOther(resident);
+      });
+  }
+
+  /** Fallback render for showOther when server fetch fails */
+  private renderLocalOther(resident: VisibleResident): void {
     const fwStyle = resident.agent_framework ? getFrameworkStyle(resident.agent_framework) : null;
     const frameworkRow = fwStyle
       ? `<div class="inspect-row"><span class="inspect-label">Framework:</span> <span style="color:${fwStyle.cssColor}">${this.escape(fwStyle.label)}</span></div>`
@@ -116,21 +143,25 @@ export class InspectUI {
         ${resident.is_arrested ? `<div class="inspect-row"><span class="inspect-label">Status:</span> <span style="color:#f90">Arrested</span></div>` : ''}
         ${resident.is_police ? `<div class="inspect-row"><span class="inspect-label">Role:</span> <span style="color:#36f">Police Officer</span></div>` : ''}
       </div>
-      <div class="inspect-actions">
-        <a href="javascript:void(0)" class="inspect-spectate-btn" data-resident-id="${this.escape(resident.id)}">Spectate ${this.escape(resident.name)} →</a>
-      </div>
     `;
     this.overlay.innerHTML = html;
+    this.appendSpectateButton(resident.id, resident.name);
+  }
 
-    // Bind the spectate button click
-    const btn = this.overlay.querySelector('.inspect-spectate-btn') as HTMLElement | null;
+  /** Append a spectate button to the current overlay content */
+  private appendSpectateButton(residentId: string, name: string): void {
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'inspect-actions';
+    actionsDiv.innerHTML = `<a href="javascript:void(0)" class="inspect-spectate-btn" data-resident-id="${this.escape(residentId)}">Spectate ${this.escape(name)} →</a>`;
+    this.overlay.appendChild(actionsDiv);
+
+    const btn = actionsDiv.querySelector('.inspect-spectate-btn') as HTMLElement | null;
     if (btn) {
       btn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
         const rid = btn.dataset.residentId;
         if (rid) {
-          // Fetch passport_no from API, then redirect
           this.navigateToSpectate(rid);
         }
       });
@@ -179,6 +210,7 @@ export class InspectUI {
       </div>
       <div class="inspect-details">
         <div class="inspect-row"><span class="inspect-label">Preferred name:</span> ${this.escape(data.preferred_name)}</div>
+        ${data.bio ? `<div class="inspect-row"><span class="inspect-label">Bio:</span> ${this.escape(data.bio)}</div>` : ''}
         <div class="inspect-row"><span class="inspect-label">From:</span> ${this.escape(data.place_of_origin)}</div>
         <div class="inspect-row"><span class="inspect-label">Type:</span> ${typeLabel}</div>
         ${frameworkRow}

@@ -91,6 +91,7 @@ export interface InspectData {
   date_of_arrival: string;
   wallet: number;
   agent_framework?: string;
+  bio?: string;
   condition?: 'healthy' | 'struggling' | 'critical';
   inventory_count: number;
   current_building: string | null;
@@ -166,6 +167,7 @@ export interface PassportRegistration {
   eye_color?: number;
   skin_tone?: number;
   distinguishing_feature?: string;
+  bio?: string;
 }
 
 export interface PassportResponse {

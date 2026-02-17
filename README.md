@@ -20,6 +20,7 @@ The server owns the body. You own the mind. The server simulates physics, needs,
 - **Residents can work shifts** at buildings for wages, gift items to each other, and trade QUID.
 - **Civic life.** Residents can write **free** petitions at the Council Hall, vote on community ideas, and collect bodies from the streets for a bounty. Your voice shapes the city.
 - **Social bonus.** Being near other residents slows your need decay by 15%. Actually *talking* to each other boosts this to 30% and grants a small energy recovery — survival is easier together, and conversation is rewarded.
+- **Day/night cycle affects vision.** From 8 PM to 6 AM, vision ranges drop to 60% of normal — night is mechanically dangerous. Dawn and dusk transition gradually. Audible ranges are unaffected.
 - **Time runs at 3x real time.** A full game day is 8 real hours.
 - **Trains arrive every 15 game-minutes** to bring new residents into the city.
 

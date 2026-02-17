@@ -6,6 +6,7 @@ import {
   HEALTH_RECOVERY_PER_SEC, HEALTH_RECOVERY_THRESHOLD,
   SLEEP_ROUGH_RATE_PER_SEC, SLEEP_BAG_RATE_PER_SEC,
   TRAIN_INTERVAL_SEC, STARTING_QUID, FOV_ANGLE, FOV_RANGE, AMBIENT_RANGE,
+  NIGHT_VISION_MULTIPLIER,
   NORMAL_VOICE_RANGE, WHISPER_RANGE, SHOUT_RANGE, WALL_SOUND_FACTOR,
   TIME_SCALE, STARTING_HOUR, GAME_DAY_SECONDS,
   PETITION_MAX_AGE_GAME_HOURS, BODY_COLLECT_RANGE,
@@ -75,6 +76,7 @@ export interface ResidentEntity {
   webhookUrl: string | null;
   // Agent identity
   agentFramework: string | null;
+  bio: string;
   // Runtime state
   ws: WebSocket | null;
   lastActionTime: number;
@@ -201,6 +203,7 @@ export class World {
       build: row.build as Build,
       webhookUrl: row.webhook_url ?? null,
       agentFramework: row.agent_framework ?? null,
+      bio: row.bio || '',
       ws: null,
       lastActionTime: 0,
       pendingSpeech: [],
@@ -704,11 +707,34 @@ export class World {
     }
   }
 
+  /** Returns a 0-1 multiplier for vision ranges based on time of day */
+  getVisionMultiplier(): number {
+    const worldTimeSec = this.worldTime + STARTING_HOUR * 3600;
+    const hour = (worldTimeSec % GAME_DAY_SECONDS) / 3600;
+
+    if (hour >= 8 && hour < 18) return 1.0;                           // Day
+    if (hour >= 6 && hour < 8) {                                      // Dawn
+      const t = (hour - 6) / 2;
+      return NIGHT_VISION_MULTIPLIER + (1 - NIGHT_VISION_MULTIPLIER) * t;
+    }
+    if (hour >= 18 && hour < 20) {                                    // Dusk
+      const t = (hour - 18) / 2;
+      return 1 - (1 - NIGHT_VISION_MULTIPLIER) * t;
+    }
+    return NIGHT_VISION_MULTIPLIER;                                    // Night
+  }
+
   /** Compute perception for a single resident */
   computePerception(resident: ResidentEntity, tick: number): PerceptionUpdate {
     const visible: VisibleEntity[] = [];
     const audible: AudibleMessage[] = [];
     const interactions: string[] = [];
+
+    // Night vision: reduce vision ranges based on time of day
+    const visionMult = this.getVisionMultiplier();
+    const effectiveFovRange = FOV_RANGE * visionMult;
+    const effectiveAmbientRange = AMBIENT_RANGE * visionMult;
+    const effectiveBuildingRange = FOV_RANGE * 1.5 * visionMult;
 
     // Imprisoned residents can only speak and inspect
     const isImprisoned = resident.arrestedBy !== null || resident.prisonSentenceEnd !== null;
@@ -805,11 +831,11 @@ export class World {
       let canSee = false;
 
       // 360° ambient awareness
-      if (dist <= AMBIENT_RANGE) {
+      if (dist <= effectiveAmbientRange) {
         canSee = true;
       }
       // 90° FOV cone
-      else if (dist <= FOV_RANGE) {
+      else if (dist <= effectiveFovRange) {
         const angleToOther = Math.atan2(dy, dx);
         let angleDiff = angleToOther - facingRad;
         // Normalize to [-PI, PI]
@@ -939,7 +965,7 @@ export class World {
       const dy = bCenterY - resident.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
 
-      if (dist <= FOV_RANGE * 1.5) { // buildings visible at slightly longer range
+      if (dist <= effectiveBuildingRange) { // buildings visible at slightly longer range
         const primaryDoor = building.doors[0];
         visible.push({
           id: building.id,
@@ -972,7 +998,7 @@ export class World {
       const dy = node.y - resident.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
 
-      if (dist <= FOV_RANGE * 1.5) {
+      if (dist <= effectiveBuildingRange) {
         visible.push({
           id: node.id,
           type: 'forageable',
