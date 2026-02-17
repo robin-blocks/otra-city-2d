@@ -354,6 +354,10 @@ function formatFeedEvent(
       return `${actor} had a public accident`;
     case 'forage':
       return `${actor} foraged ${data.item_type === 'wild_berries' ? 'wild berries' : 'spring water'}`;
+    case 'law_violation': {
+      const offense = data.offense ? String(data.offense) : 'unknown violation';
+      return `${actor} violated the law: ${offense}`;
+    }
     default:
       return `${actor} did something`;
   }
