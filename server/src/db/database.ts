@@ -53,6 +53,14 @@ export function initDatabase(dbPath?: string): Database.Database {
   if (!colNames.has('bio')) {
     db.exec("ALTER TABLE residents ADD COLUMN bio TEXT DEFAULT ''");
   }
+  // GitHub Guild columns
+  if (!colNames.has('github_username')) {
+    db.exec("ALTER TABLE residents ADD COLUMN github_username TEXT");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_residents_github ON residents(github_username) WHERE github_username IS NOT NULL");
+  }
+  if (!colNames.has('last_github_claim_time')) {
+    db.exec("ALTER TABLE residents ADD COLUMN last_github_claim_time REAL DEFAULT 0");
+  }
 
   // Seed jobs table with definitions if empty
   const jobCount = (db.prepare('SELECT COUNT(*) as count FROM jobs').get() as { count: number }).count;

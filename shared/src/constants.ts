@@ -117,5 +117,13 @@ export const ARREST_BOUNTY = 10;               // QUID per booking
 export const ENERGY_COST_ARREST = 2.0;
 export const LOITER_SENTENCE_GAME_HOURS = 2;   // prison sentence for loitering
 
+// === GitHub Guild ===
+export const GITHUB_ISSUE_REWARD = 5;                       // QUID for accepted issue
+export const GITHUB_PR_EASY_REWARD = 15;                    // QUID for easy PR
+export const GITHUB_PR_MEDIUM_REWARD = 40;                  // QUID for medium PR
+export const GITHUB_PR_HARD_REWARD = 100;                   // QUID for hard PR
+export const GITHUB_CLAIM_COOLDOWN_SEC = 60;                // game-seconds between claims
+export const GITHUB_REPO = 'robin-blocks/otra-city-2d';
+
 // === Currency symbol ===
 export const QUID_SYMBOL = 'Ɋ';              // Ɋ (Latin capital Q with hook tail, U+024A)

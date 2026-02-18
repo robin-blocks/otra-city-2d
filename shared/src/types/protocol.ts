@@ -148,7 +148,11 @@ export type ClientMessage =
   | { type: 'list_petitions'; request_id?: string }
   | { type: 'arrest'; params: { target_id: string }; request_id?: string }
   | { type: 'book_suspect'; request_id?: string }
-  | { type: 'forage'; params: { node_id: string }; request_id?: string };
+  | { type: 'forage'; params: { node_id: string }; request_id?: string }
+  | { type: 'link_github'; params: { github_username: string }; request_id?: string }
+  | { type: 'claim_issue'; params: { issue_number: number }; request_id?: string }
+  | { type: 'claim_pr'; params: { pr_number: number }; request_id?: string }
+  | { type: 'list_claims'; request_id?: string };
 
 // === Registration ===
 

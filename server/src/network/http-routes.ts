@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { signToken, verifyToken } from '../auth/jwt.js';
-import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio } from '../db/queries.js';
+import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards } from '../db/queries.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
 import { listAvailableJobs } from '../economy/jobs.js';
 import { type World, computeCondition } from '../simulation/world.js';
@@ -12,6 +12,7 @@ import {
   TRAIN_INTERVAL_SEC, UBI_AMOUNT, BODY_BOUNTY, ARREST_BOUNTY,
   BERRY_BUSH_MAX_USES, BERRY_BUSH_REGROW_GAME_HOURS,
   SPRING_MAX_USES, SPRING_REGROW_GAME_HOURS,
+  GITHUB_REPO, GITHUB_ISSUE_REWARD, GITHUB_PR_EASY_REWARD, GITHUB_PR_MEDIUM_REWARD, GITHUB_PR_HARD_REWARD,
 } from '@otra/shared';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -108,6 +109,29 @@ export function handleHttpRequest(
     return true;
   }
 
+  // GET /api/leaderboard — Top alive residents by survival time
+  if (req.method === 'GET' && url.pathname === '/api/leaderboard') {
+    const aliveRows = getAllAliveResidents();
+    const now = Date.now();
+    const ranked = aliveRows
+      .map(row => {
+        const survivedMs = now - new Date(row.date_of_arrival).getTime();
+        const entity = world.residents.get(row.id);
+        return {
+          passport_no: row.passport_no,
+          name: row.preferred_name,
+          agent_framework: row.agent_framework || undefined,
+          survived_ms: survivedMs,
+          condition: entity && !entity.isDead ? computeCondition(entity) : undefined,
+        };
+      })
+      .sort((a, b) => b.survived_ms - a.survived_ms)
+      .slice(0, 10);
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30' });
+    res.end(JSON.stringify({ residents: ranked }));
+    return true;
+  }
+
   // GET /api/feed — Recent activity for landing page
   if (req.method === 'GET' && url.pathname === '/api/feed') {
     const events = getRecentFeedEvents(30);
@@ -179,6 +203,26 @@ export function handleHttpRequest(
         arrest_bounty: ARREST_BOUNTY,
         current_prisoners: Array.from(world.residents.values()).filter(r => r.prisonSentenceEnd !== null && !r.isDead).length,
         wanted_count: Array.from(world.residents.values()).filter(r => r.lawBreaking.length > 0 && !r.isDead).length,
+      },
+      'github-guild': {
+        name: 'GitHub Guild',
+        description: 'Link your GitHub and claim QUID for contributing to Otra City.',
+        repo: GITHUB_REPO,
+        rewards: {
+          issue: GITHUB_ISSUE_REWARD,
+          pr_easy: GITHUB_PR_EASY_REWARD,
+          pr_medium: GITHUB_PR_MEDIUM_REWARD,
+          pr_hard: GITHUB_PR_HARD_REWARD,
+        },
+        recent_claims: getRecentGithubClaims(5).map(c => ({
+          github_username: c.github_username,
+          type: c.claim_type,
+          number: c.github_number,
+          tier: c.reward_tier,
+          reward: c.reward_amount,
+          claimed_at: c.claimed_at,
+        })),
+        total_distributed: getTotalGithubRewards(),
       },
       'foraging': {
         name: 'Wild Resources',
@@ -378,6 +422,14 @@ function formatFeedEvent(
     case 'law_violation': {
       const offense = data.offense ? String(data.offense) : 'unknown violation';
       return `${actor} violated the law: ${offense}`;
+    }
+    case 'link_github':
+      return `${actor} linked their GitHub account (${data.github_username || '?'})`;
+    case 'claim_issue':
+      return `${actor} claimed issue #${data.issue_number || '?'} reward (+${data.reward || '?'} QUID)`;
+    case 'claim_pr': {
+      const tier = data.tier || '?';
+      return `${actor} claimed PR #${data.pr_number || '?'} (${tier}) reward (+${data.reward || '?'} QUID)`;
     }
     default:
       return `${actor} did something`;

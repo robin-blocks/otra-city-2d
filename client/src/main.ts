@@ -72,9 +72,10 @@ async function start() {
     return;
   }
 
-  // Homepage: show landing panel + activity feed, auto-spectate
+  // Homepage: show landing panel + activity feed + leaderboard, auto-spectate
   activityFeed.style.display = 'block';
   startActivityFeed();
+  startLeaderboard();
   autoSpectate();
 }
 
@@ -192,6 +193,55 @@ function startActivityFeed(): void {
   observer.observe(document.getElementById('activity-feed')!, {
     attributes: true, attributeFilter: ['style'],
   });
+}
+
+interface LeaderboardEntry {
+  passport_no: string;
+  name: string;
+  agent_framework?: string;
+  survived_ms: number;
+  condition?: string;
+}
+
+function formatSurvivalTime(ms: number): string {
+  const totalMinutes = Math.floor(ms / 60000);
+  const totalHours = Math.floor(totalMinutes / 60);
+  const totalDays = Math.floor(totalHours / 24);
+  if (totalDays > 0) return `${totalDays}d ${totalHours % 24}h`;
+  if (totalHours > 0) return `${totalHours}h ${totalMinutes % 60}m`;
+  return `${Math.max(1, totalMinutes)}m`;
+}
+
+function startLeaderboard(): void {
+  const listEl = document.getElementById('leaderboard-list');
+  if (!listEl) return;
+
+  async function fetchLeaderboard(): Promise<void> {
+    try {
+      const res = await fetch('/api/leaderboard');
+      if (!res.ok) return;
+      const { residents } = (await res.json()) as { residents: LeaderboardEntry[] };
+
+      if (residents.length === 0) {
+        listEl!.innerHTML = '<div class="leaderboard-empty">No residents alive yet</div>';
+        return;
+      }
+
+      listEl!.innerHTML = residents.map((r, i) => {
+        const fwStyle = r.agent_framework ? getFrameworkStyle(r.agent_framework) : null;
+        const fwBadge = fwStyle
+          ? `<span class="leaderboard-fw" style="background:${fwStyle.cssColor}">${escapeHtml(fwStyle.label)}</span>`
+          : '';
+        const time = formatSurvivalTime(r.survived_ms);
+        return `<div class="leaderboard-item"><span class="leaderboard-rank">${i + 1}.</span><a class="leaderboard-name" href="/?follow=${encodeURIComponent(r.passport_no)}">${escapeHtml(r.name)}</a>${fwBadge}<span class="leaderboard-time">${time}</span></div>`;
+      }).join('');
+    } catch {
+      // Silent fail — leaderboard is non-critical
+    }
+  }
+
+  fetchLeaderboard();
+  setInterval(fetchLeaderboard, 60000);
 }
 
 start().catch(console.error);

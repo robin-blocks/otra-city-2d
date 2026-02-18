@@ -129,6 +129,21 @@ CREATE TABLE IF NOT EXISTS shop_stock (
 -- Add shop_restock_timer column to world_state if not exists
 -- (SQLite doesn't support IF NOT EXISTS for ALTER TABLE, handled in code)
 
+-- === GitHub Guild ===
+
+CREATE TABLE IF NOT EXISTS github_claims (
+    id TEXT PRIMARY KEY,
+    resident_id TEXT NOT NULL REFERENCES residents(id),
+    github_username TEXT NOT NULL,
+    claim_type TEXT NOT NULL,
+    github_number INTEGER NOT NULL,
+    reward_tier TEXT NOT NULL,
+    reward_amount INTEGER NOT NULL,
+    claimed_at INTEGER NOT NULL,
+    UNIQUE(github_number, claim_type)
+);
+CREATE INDEX IF NOT EXISTS idx_github_claims_resident ON github_claims(resident_id);
+
 -- === Law enforcement ===
 
 CREATE TABLE IF NOT EXISTS laws (

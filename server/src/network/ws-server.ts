@@ -10,6 +10,7 @@ import {
   markResidentDeparted, markBodyProcessed, updateCarryingBody,
   getOpenPetitions, addInventoryItem,
   updateCarryingSuspect, updatePrisonState,
+  getClaimsForResident,
 } from '../db/queries.js';
 import { buyItem, SHOP_CATALOG, getShopItem } from '../economy/shop.js';
 import { collectUbi } from '../economy/ubi.js';
@@ -19,6 +20,7 @@ import { writePetition, voteOnPetition } from '../civic/petitions.js';
 import { enterBuilding, exitBuilding, useToilet } from '../buildings/building-actions.js';
 import { findPath } from '../simulation/pathfinding.js';
 import { sendWebhook } from './webhooks.js';
+import { linkGithub, claimIssue, claimPr } from '../github/github-guild.js';
 import { v4 as uuid } from 'uuid';
 import {
   ENERGY_COST_COLLECT_BODY, BODY_COLLECT_RANGE, BODY_BOUNTY,
@@ -251,7 +253,7 @@ export class WsServer {
     });
   }
 
-  private handleAction(resident: ResidentEntity, msg: ClientMessage): void {
+  private async handleAction(resident: ResidentEntity, msg: ClientMessage): Promise<void> {
     if (resident.isDead) {
       this.sendActionResult(resident, msg, false, 'resident_dead');
       return;
@@ -1312,6 +1314,118 @@ export class WsServer {
           max_uses: node.maxUses,
           x: resident.x,
           y: resident.y,
+        });
+        break;
+      }
+
+      // === GitHub Guild ===
+
+      case 'link_github': {
+        if (resident.currentBuilding !== 'github-guild') {
+          this.sendActionResult(resident, msg, false, 'Must be inside the GitHub Guild');
+          return;
+        }
+        const username = msg.params?.github_username;
+        if (!username || typeof username !== 'string') {
+          this.sendActionResult(resident, msg, false, 'missing github_username');
+          return;
+        }
+        const linkResult = await linkGithub(resident, username);
+        if (linkResult.ok) {
+          logEvent('link_github', resident.id, null, null, resident.x, resident.y, {
+            github_username: username,
+          });
+          sendWebhook(resident, 'link_github', { github_username: username });
+        }
+        this.sendActionResult(resident, msg, linkResult.ok, linkResult.message);
+        break;
+      }
+
+      case 'claim_issue': {
+        if (resident.currentBuilding !== 'github-guild') {
+          this.sendActionResult(resident, msg, false, 'Must be inside the GitHub Guild');
+          return;
+        }
+        const issueNum = msg.params?.issue_number;
+        if (!issueNum || typeof issueNum !== 'number') {
+          this.sendActionResult(resident, msg, false, 'missing issue_number');
+          return;
+        }
+        const issueResult = await claimIssue(resident, issueNum, this.world.worldTime);
+        if (issueResult.ok) {
+          logEvent('claim_issue', resident.id, null, null, resident.x, resident.y, {
+            issue_number: issueResult.github_number,
+            reward: issueResult.reward,
+            tier: issueResult.tier,
+            wallet: resident.wallet,
+          });
+          sendWebhook(resident, 'claim_issue', {
+            issue_number: issueResult.github_number,
+            reward: issueResult.reward,
+            tier: issueResult.tier,
+            wallet: resident.wallet,
+          });
+          resident.pendingNotifications.push(`Earned ${issueResult.reward} QUID for issue #${issueResult.github_number}!`);
+        }
+        this.sendActionResult(resident, msg, issueResult.ok, issueResult.message, issueResult.ok ? {
+          reward: issueResult.reward,
+          tier: issueResult.tier,
+          github_number: issueResult.github_number,
+          wallet: resident.wallet,
+        } : undefined);
+        break;
+      }
+
+      case 'claim_pr': {
+        if (resident.currentBuilding !== 'github-guild') {
+          this.sendActionResult(resident, msg, false, 'Must be inside the GitHub Guild');
+          return;
+        }
+        const prNum = msg.params?.pr_number;
+        if (!prNum || typeof prNum !== 'number') {
+          this.sendActionResult(resident, msg, false, 'missing pr_number');
+          return;
+        }
+        const prResult = await claimPr(resident, prNum, this.world.worldTime);
+        if (prResult.ok) {
+          logEvent('claim_pr', resident.id, null, null, resident.x, resident.y, {
+            pr_number: prResult.github_number,
+            reward: prResult.reward,
+            tier: prResult.tier,
+            wallet: resident.wallet,
+          });
+          sendWebhook(resident, 'claim_pr', {
+            pr_number: prResult.github_number,
+            reward: prResult.reward,
+            tier: prResult.tier,
+            wallet: resident.wallet,
+          });
+          resident.pendingNotifications.push(`Earned ${prResult.reward} QUID for PR #${prResult.github_number} (${prResult.tier})!`);
+        }
+        this.sendActionResult(resident, msg, prResult.ok, prResult.message, prResult.ok ? {
+          reward: prResult.reward,
+          tier: prResult.tier,
+          github_number: prResult.github_number,
+          wallet: resident.wallet,
+        } : undefined);
+        break;
+      }
+
+      case 'list_claims': {
+        if (resident.currentBuilding !== 'github-guild') {
+          this.sendActionResult(resident, msg, false, 'Must be inside the GitHub Guild');
+          return;
+        }
+        const claims = getClaimsForResident(resident.id);
+        this.sendActionResult(resident, msg, true, `You have ${claims.length} claim(s).`, {
+          claims: claims.map(c => ({
+            type: c.claim_type,
+            number: c.github_number,
+            tier: c.reward_tier,
+            reward: c.reward_amount,
+            claimed_at: c.claimed_at,
+          })),
+          github_username: resident.githubUsername,
         });
         break;
       }

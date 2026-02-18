@@ -191,6 +191,22 @@ function generateMap(): MapData {
     interiorObstacles: psInterior.interiorObstacles,
   });
 
+  // 8. GitHub Guild
+  const guild = { x: CX + 10, y: CY + 24, w: 8, h: 6, doorSide: 'south' as const, doorOffset: 4 };
+  const guildInterior = placeBuilding(ground, obstacles, guild);
+  buildings.push({
+    id: 'github-guild', name: 'GitHub Guild', type: 'guild',
+    tileX: guild.x, tileY: guild.y,
+    widthTiles: guild.w, heightTiles: guild.h,
+    doors: [{ tileX: guild.x + 4, tileY: guild.y + guild.h - 1, facing: 'south' }],
+    interactionZones: [
+      { x: 1, y: 1, width: 2, height: 1, action: 'claim_issue' },
+      { x: 4, y: 1, width: 2, height: 1, action: 'claim_pr' },
+    ],
+    interiorGround: guildInterior.interiorGround,
+    interiorObstacles: guildInterior.interiorObstacles,
+  });
+
   // === GRAVEYARD ===
   fillRect(ground, CX + 48, CY + 50, 12, 10, TileType.GRAVEL);
   fillRect(obstacles, CX + 48, CY + 50, 12, 10, 0);

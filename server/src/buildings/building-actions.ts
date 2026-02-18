@@ -77,6 +77,19 @@ export function enterBuilding(
     }
   }
 
+  // GitHub Guild welcome notification
+  if (buildingId === 'github-guild') {
+    if (!resident.githubUsername) {
+      resident.pendingNotifications.push(
+        'Welcome to the GitHub Guild! Link your GitHub account with link_github. First, include your passport number in any issue, PR, or comment on robin-blocks/otra-city-2d.'
+      );
+    } else {
+      resident.pendingNotifications.push(
+        `Welcome back, ${resident.githubUsername}! Claim rewards for merged PRs (claim_pr) and accepted issues (claim_issue).`
+      );
+    }
+  }
+
   return { success: true, message: `Entered ${building.name}` };
 }
 

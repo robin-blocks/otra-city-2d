@@ -52,6 +52,8 @@ export interface ResidentRow {
   agent_framework: string | null;
   webhook_url: string | null;
   bio: string;
+  github_username: string | null;
+  last_github_claim_time: number;
   api_key: string | null;
   x: number;
   y: number;
@@ -611,4 +613,65 @@ export function updatePrisonState(
   getDb().prepare(
     'UPDATE residents SET arrested_by = ?, prison_sentence_end = ? WHERE id = ?'
   ).run(arrestedBy, sentenceEnd, residentId);
+}
+
+// === GitHub Guild queries ===
+
+export interface GithubClaimRow {
+  id: string;
+  resident_id: string;
+  github_username: string;
+  claim_type: string;
+  github_number: number;
+  reward_tier: string;
+  reward_amount: number;
+  claimed_at: number;
+}
+
+export function updateResidentGithub(id: string, username: string): void {
+  getDb().prepare('UPDATE residents SET github_username = ? WHERE id = ?').run(username, id);
+}
+
+export function getResidentByGithub(username: string): ResidentRow | undefined {
+  return getDb().prepare('SELECT * FROM residents WHERE github_username = ?').get(username) as ResidentRow | undefined;
+}
+
+export function getClaimByNumber(claimType: string, githubNumber: number): GithubClaimRow | undefined {
+  return getDb().prepare(
+    'SELECT * FROM github_claims WHERE claim_type = ? AND github_number = ?'
+  ).get(claimType, githubNumber) as GithubClaimRow | undefined;
+}
+
+export function insertGithubClaim(claim: Omit<GithubClaimRow, 'id'>): GithubClaimRow {
+  const id = uuid();
+  getDb().prepare(`
+    INSERT INTO github_claims (id, resident_id, github_username, claim_type, github_number, reward_tier, reward_amount, claimed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, claim.resident_id, claim.github_username, claim.claim_type, claim.github_number, claim.reward_tier, claim.reward_amount, claim.claimed_at);
+  return { id, ...claim };
+}
+
+export function getClaimsForResident(residentId: string): GithubClaimRow[] {
+  return getDb().prepare(
+    'SELECT * FROM github_claims WHERE resident_id = ? ORDER BY claimed_at DESC'
+  ).all(residentId) as GithubClaimRow[];
+}
+
+export function getRecentGithubClaims(limit: number = 5): Array<GithubClaimRow & { resident_name: string; resident_passport: string }> {
+  return getDb().prepare(`
+    SELECT gc.*, r.preferred_name AS resident_name, r.passport_no AS resident_passport
+    FROM github_claims gc
+    JOIN residents r ON gc.resident_id = r.id
+    ORDER BY gc.claimed_at DESC
+    LIMIT ?
+  `).all(limit) as Array<GithubClaimRow & { resident_name: string; resident_passport: string }>;
+}
+
+export function getTotalGithubRewards(): number {
+  const row = getDb().prepare('SELECT COALESCE(SUM(reward_amount), 0) as total FROM github_claims').get() as { total: number };
+  return row.total;
+}
+
+export function updateLastGithubClaimTime(id: string, worldTime: number): void {
+  getDb().prepare('UPDATE residents SET last_github_claim_time = ? WHERE id = ?').run(worldTime, id);
 }

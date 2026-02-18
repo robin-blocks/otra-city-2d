@@ -77,6 +77,9 @@ export interface ResidentEntity {
   // Agent identity
   agentFramework: string | null;
   bio: string;
+  // GitHub Guild
+  githubUsername: string | null;
+  lastGithubClaimTime: number;
   // Runtime state
   ws: WebSocket | null;
   lastActionTime: number;
@@ -204,6 +207,8 @@ export class World {
       webhookUrl: row.webhook_url ?? null,
       agentFramework: row.agent_framework ?? null,
       bio: row.bio || '',
+      githubUsername: row.github_username ?? null,
+      lastGithubClaimTime: row.last_github_claim_time ?? 0,
       ws: null,
       lastActionTime: 0,
       pendingSpeech: [],
@@ -954,6 +959,13 @@ export class World {
       // Police station: book_suspect if carrying one
       if (resident.currentBuilding === 'police-station' && resident.carryingSuspectId) {
         interactions.push('book_suspect');
+      }
+      // GitHub Guild: link/list actions
+      if (resident.currentBuilding === 'github-guild') {
+        if (!resident.githubUsername) {
+          interactions.push('link_github');
+        }
+        interactions.push('list_claims');
       }
     }
 

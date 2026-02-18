@@ -12,6 +12,12 @@ interface BuildingData {
   arrest_bounty?: number;
   current_prisoners?: number;
   wanted_count?: number;
+  // GitHub Guild
+  description?: string;
+  repo?: string;
+  rewards?: { issue: number; pr_easy: number; pr_medium: number; pr_hard: number };
+  recent_claims?: Array<{ github_username: string; type: string; number: number; tier: string; reward: number; claimed_at: number }>;
+  total_distributed?: number;
 }
 
 interface BuildingsResponse {
@@ -113,6 +119,9 @@ export class BuildingInfoUI {
         break;
       case 'police-station':
         html += this.renderPoliceStation(data);
+        break;
+      case 'github-guild':
+        html += this.renderGithubGuild(data);
         break;
       default:
         html += '<div class="building-empty">No information available</div>';
@@ -259,6 +268,75 @@ export class BuildingInfoUI {
       <div class="building-stat"><span class="building-stat-label">Wanted residents:</span> <span class="building-stat-value" style="color:${(data.wanted_count ?? 0) > 0 ? '#c66' : '#3c6'}">${data.wanted_count ?? 0}</span></div>
     `;
     html += '<div class="building-item-detail" style="margin-top:8px;">Police officers earn Ɋ10 per booking plus shift wages. Apply at Council Hall.</div>';
+
+    return html;
+  }
+
+  private renderGithubGuild(data: BuildingData): string {
+    let html = '';
+
+    if (data.description) {
+      html += `<div class="building-item-detail" style="margin-bottom:12px;">${this.esc(data.description)}</div>`;
+    }
+
+    if (data.repo) {
+      html += `<div class="building-stat"><span class="building-stat-label">Repository:</span> <span class="building-stat-value"><a href="https://github.com/${this.esc(data.repo)}" target="_blank" style="color:#5c9;">${this.esc(data.repo)}</a></span></div>`;
+    }
+
+    // Reward tiers
+    html += '<div class="building-section-title">REWARD TIERS</div>';
+    if (data.rewards) {
+      html += `
+        <div class="building-item">
+          <div class="building-item-row">
+            <span class="building-item-name">Issue (reward:issue)</span>
+            <span class="building-item-price">Ɋ${data.rewards.issue}</span>
+          </div>
+        </div>
+        <div class="building-item">
+          <div class="building-item-row">
+            <span class="building-item-name">PR Easy (reward:easy)</span>
+            <span class="building-item-price">Ɋ${data.rewards.pr_easy}</span>
+          </div>
+        </div>
+        <div class="building-item">
+          <div class="building-item-row">
+            <span class="building-item-name">PR Medium (reward:medium)</span>
+            <span class="building-item-price">Ɋ${data.rewards.pr_medium}</span>
+          </div>
+        </div>
+        <div class="building-item">
+          <div class="building-item-row">
+            <span class="building-item-name">PR Hard (reward:hard)</span>
+            <span class="building-item-price">Ɋ${data.rewards.pr_hard}</span>
+          </div>
+        </div>`;
+    }
+
+    // Total distributed
+    if (data.total_distributed !== undefined) {
+      html += `<div class="building-stat" style="margin-top:8px;"><span class="building-stat-label">Total distributed:</span> <span class="building-stat-value">Ɋ${data.total_distributed}</span></div>`;
+    }
+
+    // Recent claims
+    html += '<div class="building-section-title">RECENT CLAIMS</div>';
+    if (!data.recent_claims || data.recent_claims.length === 0) {
+      html += '<div class="building-empty">No claims yet. Be the first!</div>';
+    } else {
+      for (const c of data.recent_claims) {
+        const typeLabel = c.type === 'pr' ? `PR #${c.number}` : `Issue #${c.number}`;
+        html += `
+          <div class="building-item">
+            <div class="building-item-row">
+              <span class="building-item-name">${this.esc(c.github_username)}</span>
+              <span class="building-item-price">+Ɋ${c.reward}</span>
+            </div>
+            <div class="building-item-row">
+              <span class="building-item-detail">${typeLabel} (${this.esc(c.tier)})</span>
+            </div>
+          </div>`;
+      }
+    }
 
     return html;
   }

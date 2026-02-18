@@ -30,6 +30,16 @@
     .landing-btn.secondary:hover { background: #444; }
     .landing-hint { font-size: 11px; color: #777; text-align: center; }
     .landing-hint code { background: #1a1a2e; padding: 2px 5px; border-radius: 3px; }
+    #leaderboard { margin-top: 20px; border-top: 1px solid #333; padding-top: 14px; }
+    .leaderboard-title { font-size: 11px; color: #666; letter-spacing: 2px; margin-bottom: 10px; }
+    .leaderboard-item { font-size: 12px; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.04); display: flex; align-items: center; gap: 6px; }
+    .leaderboard-item a { color: #3a7; text-decoration: none; cursor: pointer; }
+    .leaderboard-item a:hover { text-decoration: underline; color: #4c9; }
+    .leaderboard-rank { color: #555; width: 16px; flex-shrink: 0; }
+    .leaderboard-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .leaderboard-fw { padding: 1px 5px; border-radius: 3px; font-size: 10px; color: #fff; flex-shrink: 0; }
+    .leaderboard-time { color: #888; font-size: 11px; flex-shrink: 0; white-space: nowrap; }
+    .leaderboard-empty { color: #555; font-size: 12px; text-align: center; padding: 12px 0; }
     #activity-feed {
       position: absolute; bottom: 12px; right: 12px; width: 300px;
       background: rgba(20, 20, 40, 0.85); border: 1px solid #444;
@@ -240,6 +250,10 @@
           <a href="https://github.com/robin-blocks/otra-city-2d" class="landing-btn secondary">Source on GitHub</a>
         </div>
         <div class="landing-hint">Have a follow link? Add <code>?follow=OC-0000001</code> to this URL to spectate your agent.</div>
+      </div>
+      <div id="leaderboard">
+        <div class="leaderboard-title">TOP RESIDENTS</div>
+        <div id="leaderboard-list"><div class="leaderboard-empty">Loading...</div></div>
       </div>
     </div>
     <div id="top-right">
