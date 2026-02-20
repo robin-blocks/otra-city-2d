@@ -4,13 +4,14 @@ import type { Server } from 'http';
 import { verifyToken } from '../auth/jwt.js';
 import { type World, type ResidentEntity, computeCondition } from '../simulation/world.js';
 import type { ClientMessage, ServerMessage } from '@otra/shared';
-import { WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR, ARREST_RANGE, ARREST_BOUNTY, ENERGY_COST_ARREST, LOITER_SENTENCE_GAME_HOURS, FORAGE_RANGE, ENERGY_COST_FORAGE } from '@otra/shared';
+import { WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR, ARREST_RANGE, ARREST_BOUNTY, ENERGY_COST_ARREST, LOITER_SENTENCE_GAME_HOURS, FORAGE_RANGE, ENERGY_COST_FORAGE, REFERRAL_MATURITY_MS, WAKE_COOLDOWN_MS, WAKE_MIN_ENERGY } from '@otra/shared';
 import {
   logEvent, getResident, getRecentEventsForResident,
   markResidentDeparted, markBodyProcessed, updateCarryingBody,
   getOpenPetitions, addInventoryItem,
   updateCarryingSuspect, updatePrisonState,
   getClaimsForResident,
+  getReferralStats, getClaimableReferrals, claimReferrals,
 } from '../db/queries.js';
 import { buyItem, SHOP_CATALOG, getShopItem } from '../economy/shop.js';
 import { collectUbi } from '../economy/ubi.js';
@@ -21,6 +22,7 @@ import { enterBuilding, exitBuilding, useToilet } from '../buildings/building-ac
 import { findPath } from '../simulation/pathfinding.js';
 import { sendWebhook } from './webhooks.js';
 import { linkGithub, claimIssue, claimPr } from '../github/github-guild.js';
+import { getChangelogVersion, getLatestChangelogEntry } from './http-routes.js';
 import { v4 as uuid } from 'uuid';
 import {
   ENERGY_COST_COLLECT_BODY, BODY_COLLECT_RANGE, BODY_BOUNTY,
@@ -153,6 +155,21 @@ export class WsServer {
       world_time: this.world.worldTime + STARTING_HOUR * 3600,
     });
 
+    // Send system announcement if there's a new version
+    const latestEntry = getLatestChangelogEntry();
+    if (latestEntry) {
+      const version = getChangelogVersion();
+      this.send(ws, {
+        type: 'system_announcement',
+        title: latestEntry.title,
+        message: latestEntry.changes.join('; '),
+        version,
+      });
+      resident.pendingNotifications.push(
+        `System update v${version}: ${latestEntry.title}. See /developer.html for details.`
+      );
+    }
+
     console.log(`[WS] ${resident.preferredName} (${resident.passportNo}) connected`);
 
     // Handle messages
@@ -254,6 +271,23 @@ export class WsServer {
   }
 
   private async handleAction(resident: ResidentEntity, msg: ClientMessage): Promise<void> {
+    // Request ID deduplication
+    const requestId = ('request_id' in msg ? msg.request_id : undefined) || '';
+    if (requestId) {
+      const now = Date.now();
+      // Clean expired entries (>30s old)
+      for (const [id, ts] of resident.recentRequestIds) {
+        if (now - ts > 30_000) resident.recentRequestIds.delete(id);
+      }
+      // Reject duplicate
+      if (resident.recentRequestIds.has(requestId)) {
+        this.sendActionResult(resident, msg, true, 'duplicate_request');
+        return;
+      }
+      // Record this request
+      resident.recentRequestIds.set(requestId, now);
+    }
+
     if (resident.isDead) {
       this.sendActionResult(resident, msg, false, 'resident_dead');
       return;
@@ -274,7 +308,7 @@ export class WsServer {
           return;
         }
         if (resident.needs.energy <= 0) {
-          this.sendActionResult(resident, msg, false, 'exhausted');
+          this.sendActionResult(resident, msg, false, 'exhausted', { energy_current: resident.needs.energy });
           return;
         }
         // Cancel active pathfinding
@@ -319,7 +353,7 @@ export class WsServer {
           return;
         }
         if (resident.needs.energy <= 0) {
-          this.sendActionResult(resident, msg, false, 'exhausted');
+          this.sendActionResult(resident, msg, false, 'exhausted', { energy_current: resident.needs.energy });
           return;
         }
 
@@ -409,7 +443,7 @@ export class WsServer {
         }
         const cost = volume === 'shout' ? ENERGY_COST_SHOUT : ENERGY_COST_SPEAK;
         if (resident.needs.energy < cost) {
-          this.sendActionResult(resident, msg, false, 'insufficient_energy');
+          this.sendActionResult(resident, msg, false, 'insufficient_energy', { energy_needed: cost, energy_current: resident.needs.energy });
           return;
         }
         resident.needs.energy -= cost;
@@ -425,7 +459,7 @@ export class WsServer {
           return;
         }
         if (resident.needs.energy >= 90) {
-          this.sendActionResult(resident, msg, false, 'not_tired');
+          this.sendActionResult(resident, msg, false, 'not_tired', { energy_current: resident.needs.energy });
           return;
         }
         // Cancel active pathfinding
@@ -434,6 +468,7 @@ export class WsServer {
         resident.pathBlockedTicks = 0;
 
         resident.isSleeping = true;
+        resident.sleepStartedAt = Date.now();
         resident.velocityX = 0;
         resident.velocityY = 0;
         resident.speed = 'stop';
@@ -447,7 +482,19 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'not_sleeping');
           return;
         }
+        // Prevent sleep-wake thrashing: minimum 30s of sleep
+        const sleepDuration = Date.now() - resident.sleepStartedAt;
+        if (sleepDuration < WAKE_COOLDOWN_MS) {
+          this.sendActionResult(resident, msg, false, 'too_soon', { retry_after_ms: WAKE_COOLDOWN_MS - sleepDuration });
+          return;
+        }
+        // Prevent waking at near-zero energy (would just re-collapse)
+        if (resident.needs.energy < WAKE_MIN_ENERGY) {
+          this.sendActionResult(resident, msg, false, 'too_tired', { energy_needed: WAKE_MIN_ENERGY, energy_current: resident.needs.energy });
+          return;
+        }
         resident.isSleeping = false;
+        resident.sleepStartedAt = 0;
         logEvent('wake', resident.id, null, null, resident.x, resident.y, {});
         this.sendActionResult(resident, msg, true);
         break;
@@ -466,6 +513,23 @@ export class WsServer {
         const enterResult = enterBuilding(resident, buildingId, this.world);
         logEvent('enter_building', resident.id, null, buildingId, resident.x, resident.y, { success: enterResult.success });
         this.sendActionResult(resident, msg, enterResult.success, enterResult.message);
+
+        // Webhook: notify about available shifts when entering a building
+        if (enterResult.success && resident.webhookUrl && !resident.employment) {
+          const jobs = listAvailableJobs();
+          const buildingJobs = jobs.filter(j => j.building_id === buildingId && j.openings > 0);
+          for (const job of buildingJobs) {
+            sendWebhook(resident, 'shift_available', {
+              building_id: buildingId,
+              job_id: job.id,
+              job_title: job.title,
+              wage: job.wage,
+              shift_hours: job.shift_hours,
+              openings: job.openings,
+              description: job.description,
+            });
+          }
+        }
         break;
       }
 
@@ -950,7 +1014,7 @@ export class WsServer {
           return;
         }
         if (resident.needs.energy < ENERGY_COST_COLLECT_BODY) {
-          this.sendActionResult(resident, msg, false, 'Not enough energy to collect a body');
+          this.sendActionResult(resident, msg, false, 'Not enough energy to collect a body', { energy_needed: ENERGY_COST_COLLECT_BODY, energy_current: resident.needs.energy });
           return;
         }
 
@@ -1057,7 +1121,7 @@ export class WsServer {
           return;
         }
         if (resident.needs.energy < ENERGY_COST_ARREST) {
-          this.sendActionResult(resident, msg, false, 'Not enough energy to arrest');
+          this.sendActionResult(resident, msg, false, 'Not enough energy to arrest', { energy_needed: ENERGY_COST_ARREST, energy_current: resident.needs.energy });
           return;
         }
 
@@ -1232,7 +1296,7 @@ export class WsServer {
           return;
         }
         if (resident.needs.energy < ENERGY_COST_FORAGE) {
-          this.sendActionResult(resident, msg, false, 'Not enough energy to forage');
+          this.sendActionResult(resident, msg, false, 'Not enough energy to forage', { energy_needed: ENERGY_COST_FORAGE, energy_current: resident.needs.energy });
           return;
         }
 
@@ -1430,6 +1494,56 @@ export class WsServer {
         break;
       }
 
+      case 'get_referral_link': {
+        if (resident.currentBuilding !== 'tourist-info') {
+          this.sendActionResult(resident, msg, false, 'Must be inside Tourist Information');
+          return;
+        }
+        const refStats = getReferralStats(resident.id, REFERRAL_MATURITY_MS);
+        this.sendActionResult(resident, msg, true, 'Here is your referral link.', {
+          link: `https://otra.city/quick-start?ref=${resident.passportNo}`,
+          stats: refStats,
+        });
+        break;
+      }
+
+      case 'claim_referrals': {
+        if (resident.currentBuilding !== 'tourist-info') {
+          this.sendActionResult(resident, msg, false, 'Must be inside Tourist Information');
+          return;
+        }
+        const claimable = getClaimableReferrals(resident.id, REFERRAL_MATURITY_MS);
+        if (claimable.length === 0) {
+          const refInfo = getReferralStats(resident.id, REFERRAL_MATURITY_MS);
+          if (refInfo.maturing > 0) {
+            this.sendActionResult(resident, msg, false, `No claimable referrals yet. ${refInfo.maturing} referral(s) still maturing (new residents must survive 1 day).`);
+          } else {
+            this.sendActionResult(resident, msg, false, 'No referrals to claim. Share your referral link to invite new residents!');
+          }
+          return;
+        }
+        const ids = claimable.map(r => r.id);
+        const result = claimReferrals(ids, Date.now());
+        resident.wallet += result.total;
+        logEvent('referral_claimed', resident.id, null, 'tourist-info', resident.x, resident.y, {
+          count: result.count,
+          total: result.total,
+          wallet: resident.wallet,
+        });
+        sendWebhook(resident, 'referral_claimed', {
+          count: result.count,
+          total: result.total,
+          wallet: resident.wallet,
+        });
+        resident.pendingNotifications.push(`Claimed ${result.count} referral reward${result.count !== 1 ? 's' : ''} — earned Ɋ${result.total}!`);
+        this.sendActionResult(resident, msg, true, `Claimed ${result.count} referral(s).`, {
+          claimed_count: result.count,
+          reward_total: result.total,
+          wallet: resident.wallet,
+        });
+        break;
+      }
+
       default:
         this.sendActionResult(resident, msg, false, 'unknown_action');
     }
@@ -1446,6 +1560,17 @@ export class WsServer {
       const perception = this.world.computePerception(resident, tick);
       const msg: ServerMessage = { type: 'perception', data: perception };
       this.send(ws, msg);
+
+      // Send any pending pain messages to the connected agent
+      for (const pain of resident.pendingPainMessages) {
+        this.send(ws, {
+          type: 'pain',
+          message: pain.message,
+          source: pain.source,
+          intensity: pain.intensity,
+          needs: pain.needs,
+        });
+      }
 
       // Also send full-world perception to any spectators watching this resident
       const spectatorSet = this.spectators.get(id);

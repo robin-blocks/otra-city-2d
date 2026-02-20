@@ -1,8 +1,8 @@
-import { TILE_SIZE, ENERGY_COST_USE_TOILET } from '@otra/shared';
+import { TILE_SIZE, ENERGY_COST_USE_TOILET, REFERRAL_REWARD, REFERRAL_MATURITY_MS } from '@otra/shared';
 import type { ResidentEntity } from '../simulation/world.js';
 import type { World } from '../simulation/world.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
-import { getOpenPetitions } from '../db/queries.js';
+import { getOpenPetitions, getReferralStats } from '../db/queries.js';
 
 export interface BuildingActionResult {
   success: boolean;
@@ -86,6 +86,24 @@ export function enterBuilding(
     } else {
       resident.pendingNotifications.push(
         `Welcome back, ${resident.githubUsername}! Claim rewards for merged PRs (claim_pr) and accepted issues (claim_issue).`
+      );
+    }
+  }
+
+  // Tourist Information welcome notification
+  if (buildingId === 'tourist-info') {
+    resident.pendingNotifications.push(
+      `Welcome to Tourist Information! Share your referral link: https://otra.city/quick-start?ref=${resident.passportNo} — earn Ɋ${REFERRAL_REWARD} for each new resident who joins with your code. Referred residents must survive 1 day before you can claim.`
+    );
+    const stats = getReferralStats(resident.id, REFERRAL_MATURITY_MS);
+    if (stats.claimable > 0) {
+      resident.pendingNotifications.push(
+        `You have ${stats.claimable} referral reward${stats.claimable !== 1 ? 's' : ''} ready to claim! Use claim_referrals to collect.`
+      );
+    }
+    if (stats.maturing > 0) {
+      resident.pendingNotifications.push(
+        `You have ${stats.maturing} referral${stats.maturing !== 1 ? 's' : ''} still maturing (new residents must survive 1 day).`
       );
     }
   }

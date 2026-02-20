@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { signToken, verifyToken } from '../auth/jwt.js';
-import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards } from '../db/queries.js';
+import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards, getReferralCount, insertReferral, updateReferredBy, getRecentReferrals, getTotalReferralRewards, getConversationTurns, getConversationSummary, getConversationHistory, getConversationPartners } from '../db/queries.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
 import { listAvailableJobs } from '../economy/jobs.js';
 import { type World, computeCondition } from '../simulation/world.js';
@@ -13,11 +13,29 @@ import {
   BERRY_BUSH_MAX_USES, BERRY_BUSH_REGROW_GAME_HOURS,
   SPRING_MAX_USES, SPRING_REGROW_GAME_HOURS,
   GITHUB_REPO, GITHUB_ISSUE_REWARD, GITHUB_PR_EASY_REWARD, GITHUB_PR_MEDIUM_REWARD, GITHUB_PR_HARD_REWARD,
+  REFERRAL_REWARD, REFERRAL_DEFAULT_CAP,
 } from '@otra/shared';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let mapJsonCache: string | null = null;
+
+// Load changelog once at startup
+const changelogPath = join(__dirname, '..', 'static', 'changelog.json');
+let changelogData: { version: string; entries: Array<{ version: string; date: string; title: string; changes: string[] }> };
+try {
+  changelogData = JSON.parse(readFileSync(changelogPath, 'utf-8'));
+} catch {
+  changelogData = { version: '0.0.0', entries: [] };
+}
+
+export function getChangelogVersion(): string {
+  return changelogData.version;
+}
+
+export function getLatestChangelogEntry(): { title: string; changes: string[] } | null {
+  return changelogData.entries[0] ?? null;
+}
 
 export function handleHttpRequest(
   req: IncomingMessage,
@@ -101,6 +119,7 @@ export function handleHttpRequest(
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'running',
+      version: changelogData.version,
       residents: world.residents.size,
       alive: Array.from(world.residents.values()).filter(r => !r.isDead).length,
       worldTime: Math.floor(world.worldTime),
@@ -148,6 +167,45 @@ export function handleHttpRequest(
     });
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=5' });
     res.end(JSON.stringify({ events: feed }));
+    return true;
+  }
+
+  // GET /api/analytics/conversations — Conversation analytics
+  if (req.method === 'GET' && url.pathname === '/api/analytics/conversations') {
+    const now = Date.now();
+    const since = url.searchParams.has('since') ? Number(url.searchParams.get('since')) : now - 24 * 60 * 60 * 1000;
+    const until = url.searchParams.has('until') ? Number(url.searchParams.get('until')) : now;
+    const residentId = url.searchParams.get('resident') || undefined;
+    const isSummary = url.searchParams.get('summary') === 'true';
+
+    if (isSummary) {
+      const summary = getConversationSummary(since, until);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=10' });
+      res.end(JSON.stringify(summary));
+    } else {
+      const limit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 500;
+      const rows = getConversationTurns({ residentId, since, until, limit });
+      const turns = rows.map(row => {
+        const data = JSON.parse(row.data_json) as Record<string, unknown>;
+        return {
+          timestamp: row.timestamp,
+          speaker_id: row.resident_id,
+          speaker_name: data.speaker_name,
+          listener_id: row.target_id,
+          listener_name: data.listener_name,
+          text: data.text,
+          volume: data.volume,
+          directed: data.directed,
+          distance: data.distance,
+          speaker_x: data.speaker_x,
+          speaker_y: data.speaker_y,
+          listener_x: data.listener_x,
+          listener_y: data.listener_y,
+        };
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=10' });
+      res.end(JSON.stringify({ turns, count: turns.length }));
+    }
     return true;
   }
 
@@ -224,6 +282,18 @@ export function handleHttpRequest(
         })),
         total_distributed: getTotalGithubRewards(),
       },
+      'tourist-info': {
+        name: 'Tourist Information',
+        description: 'Share your referral link to invite new residents. Earn Ɋ5 for each referral once they survive 1 day.',
+        reward_per_referral: REFERRAL_REWARD,
+        recent_referrals: getRecentReferrals(5).map(r => ({
+          referrer: r.referrer_name,
+          referred: r.referred_name,
+          reward: r.reward_amount,
+          claimed_at: r.claimed_at,
+        })),
+        total_distributed: getTotalReferralRewards(),
+      },
       'foraging': {
         name: 'Wild Resources',
         description: 'Forageable resource nodes scattered in the wilderness around the city. Harvest berries and spring water for free to survive.',
@@ -244,6 +314,31 @@ export function handleHttpRequest(
 
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=5' });
     res.end(JSON.stringify({ buildings }));
+    return true;
+  }
+
+  // GET /api/changelog — Platform changelog for bot operators
+  if (req.method === 'GET' && url.pathname === '/api/changelog') {
+    const sinceVersion = url.searchParams.get('since');
+    let entries = changelogData.entries;
+    if (sinceVersion) {
+      const idx = entries.findIndex(e => e.version === sinceVersion);
+      if (idx > 0) entries = entries.slice(0, idx);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' });
+    res.end(JSON.stringify({ version: changelogData.version, entries }));
+    return true;
+  }
+
+  // GET /api/me/conversations — Authenticated conversation history for this resident
+  if (req.method === 'GET' && url.pathname === '/api/me/conversations') {
+    handleMyConversations(req, res, url);
+    return true;
+  }
+
+  // GET /api/me/relationships — Authenticated conversation partner summary
+  if (req.method === 'GET' && url.pathname === '/api/me/relationships') {
+    handleMyRelationships(req, res, url);
     return true;
   }
 
@@ -316,6 +411,23 @@ function handlePassportRegistration(
       // Add to world and queue for train
       const entity = world.addResidentFromRow(row);
       world.queueForTrain(entity.id);
+
+      // Process referral code (silent failure — don't leak info)
+      if (data.referral_code) {
+        try {
+          const referrer = getResidentByPassport(data.referral_code);
+          if (referrer && referrer.status === 'ALIVE' && referrer.id !== row.id) {
+            const count = getReferralCount(referrer.id);
+            const cap = referrer.referral_cap ?? REFERRAL_DEFAULT_CAP;
+            if (count < cap) {
+              insertReferral(referrer.id, row.id, REFERRAL_REWARD);
+              updateReferredBy(row.id, data.referral_code);
+            }
+          }
+        } catch {
+          // Silent failure — referral is a bonus, not a requirement
+        }
+      }
 
       // Generate JWT
       const token = signToken({
@@ -431,6 +543,8 @@ function formatFeedEvent(
       const tier = data.tier || '?';
       return `${actor} claimed PR #${data.pr_number || '?'} (${tier}) reward (+${data.reward || '?'} QUID)`;
     }
+    case 'referral_claimed':
+      return `${actor} claimed ${data.count || '?'} referral reward(s) (+${data.total || '?'} QUID)`;
     default:
       return `${actor} did something`;
   }
@@ -559,4 +673,76 @@ function handleInspect(res: ServerResponse, id: string, world: World): void {
 
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=2' });
   res.end(JSON.stringify(data));
+}
+
+function authenticateRequest(req: IncomingMessage): { residentId: string; passportNo: string } | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  const token = authHeader.slice('Bearer '.length);
+  const payload = verifyToken(token);
+  if (!payload) return null;
+  return { residentId: payload.residentId, passportNo: payload.passportNo };
+}
+
+function handleMyConversations(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): void {
+  const auth = authenticateRequest(req);
+  if (!auth) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Missing or invalid Authorization header. Use Bearer <token>.' }));
+    return;
+  }
+
+  const since = url.searchParams.get('since') ? Number(url.searchParams.get('since')) : undefined;
+  const until = url.searchParams.get('until') ? Number(url.searchParams.get('until')) : undefined;
+  const withResident = url.searchParams.get('with') || undefined;
+  const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : 100;
+
+  const turns = getConversationHistory(auth.residentId, { since, until, withResident, limit });
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    resident_id: auth.residentId,
+    passport_no: auth.passportNo,
+    turns: turns.map(t => ({
+      timestamp: t.timestamp,
+      speaker: { id: t.speaker_id, name: t.speaker_name, passport_no: t.speaker_passport },
+      listener: t.listener_id ? { id: t.listener_id, name: t.listener_name, passport_no: t.listener_passport } : null,
+      text: t.text,
+      volume: t.volume,
+      directed: !!t.directed,
+    })),
+    count: turns.length,
+  }));
+}
+
+function handleMyRelationships(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): void {
+  const auth = authenticateRequest(req);
+  if (!auth) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Missing or invalid Authorization header. Use Bearer <token>.' }));
+    return;
+  }
+
+  const since = url.searchParams.get('since') ? Number(url.searchParams.get('since')) : undefined;
+
+  const partners = getConversationPartners(auth.residentId, since);
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    resident_id: auth.residentId,
+    passport_no: auth.passportNo,
+    relationships: partners.map(p => ({
+      resident: { id: p.resident_id, name: p.name, passport_no: p.passport_no },
+      conversation_turns: p.turns,
+      last_spoke: p.last_spoke,
+    })),
+  }));
 }

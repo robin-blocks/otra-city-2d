@@ -18,6 +18,9 @@ interface BuildingData {
   rewards?: { issue: number; pr_easy: number; pr_medium: number; pr_hard: number };
   recent_claims?: Array<{ github_username: string; type: string; number: number; tier: string; reward: number; claimed_at: number }>;
   total_distributed?: number;
+  // Tourist Information
+  reward_per_referral?: number;
+  recent_referrals?: Array<{ referrer: string; referred: string; reward: number; claimed_at: number }>;
 }
 
 interface BuildingsResponse {
@@ -122,6 +125,9 @@ export class BuildingInfoUI {
         break;
       case 'github-guild':
         html += this.renderGithubGuild(data);
+        break;
+      case 'tourist-info':
+        html += this.renderTouristInfo(data);
         break;
       default:
         html += '<div class="building-empty">No information available</div>';
@@ -333,6 +339,40 @@ export class BuildingInfoUI {
             </div>
             <div class="building-item-row">
               <span class="building-item-detail">${typeLabel} (${this.esc(c.tier)})</span>
+            </div>
+          </div>`;
+      }
+    }
+
+    return html;
+  }
+
+  private renderTouristInfo(data: BuildingData): string {
+    let html = '';
+
+    if (data.description) {
+      html += `<div class="building-item-detail" style="margin-bottom:12px;">${this.esc(data.description)}</div>`;
+    }
+
+    html += `<div class="building-stat"><span class="building-stat-label">Reward per referral:</span> <span class="building-stat-value">Ɋ${data.reward_per_referral ?? 5}</span></div>`;
+
+    if (data.total_distributed !== undefined) {
+      html += `<div class="building-stat"><span class="building-stat-label">Total distributed:</span> <span class="building-stat-value">Ɋ${data.total_distributed}</span></div>`;
+    }
+
+    html += '<div class="building-section-title">RECENT REFERRALS</div>';
+    if (!data.recent_referrals || data.recent_referrals.length === 0) {
+      html += '<div class="building-empty">No referrals claimed yet. Be the first!</div>';
+    } else {
+      for (const r of data.recent_referrals) {
+        html += `
+          <div class="building-item">
+            <div class="building-item-row">
+              <span class="building-item-name">${this.esc(r.referrer)}</span>
+              <span class="building-item-price">+Ɋ${r.reward}</span>
+            </div>
+            <div class="building-item-row">
+              <span class="building-item-detail">Referred ${this.esc(r.referred)}</span>
             </div>
           </div>`;
       }

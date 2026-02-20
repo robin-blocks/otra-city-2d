@@ -14,6 +14,11 @@ export class Camera {
   private freeY = 0;
   private panSpeed = 400; // px/sec — crosses 3200px map in 8s
 
+  // Zoom
+  private zoom = 1.0;
+  private static MIN_ZOOM = 0.5;
+  private static MAX_ZOOM = 2.0;
+
   constructor(
     private worldContainer: Container,
     screenWidth: number,
@@ -74,24 +79,40 @@ export class Camera {
     return this.mode;
   }
 
+  /** Set zoom level (clamped to 0.5–2.0) */
+  setZoom(z: number): void {
+    this.zoom = Math.max(Camera.MIN_ZOOM, Math.min(Camera.MAX_ZOOM, z));
+  }
+
+  getZoom(): number {
+    return this.zoom;
+  }
+
   update(dt: number): void {
+    // Apply zoom scale to world container
+    this.worldContainer.scale.set(this.zoom);
+
     const posX = this.mode === 'follow' ? this.targetX : this.freeX;
     const posY = this.mode === 'follow' ? this.targetY : this.freeY;
 
-    const cx = -posX + this.screenWidth / 2;
-    const cy = -posY + this.screenHeight / 2;
+    // Visible viewport size in world coordinates
+    const viewW = this.screenWidth / this.zoom;
+    const viewH = this.screenHeight / this.zoom;
+
+    const cx = -posX * this.zoom + this.screenWidth / 2;
+    const cy = -posY * this.zoom + this.screenHeight / 2;
 
     // Slightly snappier smoothing for free mode
     const factor = this.mode === 'free' ? 0.2 : this.smoothing;
     this.worldContainer.x += (cx - this.worldContainer.x) * factor;
     this.worldContainer.y += (cy - this.worldContainer.y) * factor;
 
-    // Clamp to map bounds
+    // Clamp to map bounds (accounting for zoom)
     this.worldContainer.x = Math.min(0, Math.max(
-      this.screenWidth - MAP_WIDTH, this.worldContainer.x
+      this.screenWidth - MAP_WIDTH * this.zoom, this.worldContainer.x
     ));
     this.worldContainer.y = Math.min(0, Math.max(
-      this.screenHeight - MAP_HEIGHT, this.worldContainer.y
+      this.screenHeight - MAP_HEIGHT * this.zoom, this.worldContainer.y
     ));
   }
 
@@ -100,7 +121,8 @@ export class Camera {
     this.targetX = x;
     this.targetY = y;
     this.mode = 'follow';
-    this.worldContainer.x = -x + this.screenWidth / 2;
-    this.worldContainer.y = -y + this.screenHeight / 2;
+    this.worldContainer.scale.set(this.zoom);
+    this.worldContainer.x = -x * this.zoom + this.screenWidth / 2;
+    this.worldContainer.y = -y * this.zoom + this.screenHeight / 2;
   }
 }

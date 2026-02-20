@@ -15,6 +15,7 @@ export class WsClient {
   onError: ((code: string, message: string) => void) | null = null;
   onActionResult: ((requestId: string, status: string, reason?: string) => void) | null = null;
   onInspectResult: ((data: InspectData) => void) | null = null;
+  onPain: ((message: string, source: string, intensity: string) => void) | null = null;
 
   connect(token: string): void {
     this.token = token;
@@ -83,6 +84,9 @@ export class WsClient {
         break;
       case 'inspect_result':
         this.onInspectResult?.(msg.data);
+        break;
+      case 'pain':
+        this.onPain?.(msg.message, msg.source, msg.intensity);
         break;
     }
     for (const handler of this.handlers) {

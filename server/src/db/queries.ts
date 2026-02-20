@@ -63,6 +63,7 @@ export interface ResidentRow {
   energy: number;
   bladder: number;
   health: number;
+  social: number;
   wallet: number;
   is_sleeping: number;
   current_building: string | null;
@@ -74,6 +75,8 @@ export interface ResidentRow {
   arrested_by: string | null;
   prison_sentence_end: number | null;
   carrying_suspect_id: string | null;
+  referral_cap: number;
+  referred_by: string | null;
   created_at: number;
   death_time: number | null;
   death_cause: string | null;
@@ -142,12 +145,12 @@ export function saveResidentState(
   getDb().prepare(`
     UPDATE residents SET
       x = ?, y = ?, facing = ?,
-      hunger = ?, thirst = ?, energy = ?, bladder = ?, health = ?,
+      hunger = ?, thirst = ?, energy = ?, bladder = ?, health = ?, social = ?,
       wallet = ?, is_sleeping = ?, current_building = ?
     WHERE id = ?
   `).run(
     x, y, facing,
-    needs.hunger, needs.thirst, needs.energy, needs.bladder, needs.health,
+    needs.hunger, needs.thirst, needs.energy, needs.bladder, needs.health, needs.social,
     wallet, is_sleeping ? 1 : 0, current_building,
     id
   );
@@ -236,6 +239,7 @@ const FEED_EVENT_TYPES = [
   'collect_body', 'process_body',
   'buy', 'collect_ubi', 'collapse', 'bladder_accident',
   'arrest', 'book_suspect', 'prison_release', 'law_violation',
+  'referral_claimed',
 ];
 
 export function getRecentFeedEvents(limit: number = 30): FeedEventRow[] {
@@ -256,6 +260,109 @@ export function getRecentFeedEvents(limit: number = 30): FeedEventRow[] {
   `).all(...FEED_EVENT_TYPES, limit) as FeedEventRow[];
 }
 
+// === Conversation analytics queries ===
+
+export function getConversationTurns(options: {
+  residentId?: string;
+  since?: number;
+  until?: number;
+  limit?: number;
+}): EventRow[] {
+  const conditions = ["type = 'conversation_turn'"];
+  const params: unknown[] = [];
+
+  if (options.residentId) {
+    conditions.push('(resident_id = ? OR target_id = ?)');
+    params.push(options.residentId, options.residentId);
+  }
+  if (options.since) {
+    conditions.push('timestamp >= ?');
+    params.push(options.since);
+  }
+  if (options.until) {
+    conditions.push('timestamp <= ?');
+    params.push(options.until);
+  }
+
+  const where = conditions.join(' AND ');
+  const limit = Math.min(options.limit ?? 500, 2000);
+  params.push(limit);
+
+  return getDb().prepare(`
+    SELECT * FROM events
+    WHERE ${where}
+    ORDER BY timestamp DESC
+    LIMIT ?
+  `).all(...params) as EventRow[];
+}
+
+export interface ConversationSummary {
+  period: { since: number; until: number };
+  total_turns: number;
+  unique_speakers: number;
+  unique_listeners: number;
+  directed_turns: number;
+  avg_distance: number;
+  top_pairs: Array<{ speaker: string; listener: string; speaker_id: string; listener_id: string; turns: number }>;
+  hourly_distribution: Array<{ hour: number; turns: number }>;
+}
+
+export function getConversationSummary(since: number, until: number): ConversationSummary {
+  const db = getDb();
+
+  const stats = db.prepare(`
+    SELECT
+      COUNT(*) as total_turns,
+      COUNT(DISTINCT resident_id) as unique_speakers,
+      COUNT(DISTINCT target_id) as unique_listeners,
+      COALESCE(SUM(CASE WHEN json_extract(data_json, '$.directed') = 1 THEN 1 ELSE 0 END), 0) as directed_turns,
+      COALESCE(ROUND(AVG(json_extract(data_json, '$.distance')), 1), 0) as avg_distance
+    FROM events
+    WHERE type = 'conversation_turn' AND timestamp >= ? AND timestamp <= ?
+  `).get(since, until) as {
+    total_turns: number;
+    unique_speakers: number;
+    unique_listeners: number;
+    directed_turns: number;
+    avg_distance: number | null;
+  };
+
+  const pairs = db.prepare(`
+    SELECT
+      resident_id as speaker_id,
+      target_id as listener_id,
+      json_extract(data_json, '$.speaker_name') as speaker,
+      json_extract(data_json, '$.listener_name') as listener,
+      COUNT(*) as turns
+    FROM events
+    WHERE type = 'conversation_turn' AND timestamp >= ? AND timestamp <= ?
+    GROUP BY resident_id, target_id
+    ORDER BY turns DESC
+    LIMIT 10
+  `).all(since, until) as Array<{ speaker: string; listener: string; speaker_id: string; listener_id: string; turns: number }>;
+
+  const hourly = db.prepare(`
+    SELECT
+      CAST(((timestamp / 1000) % 86400) / 3600 AS INTEGER) as hour,
+      COUNT(*) as turns
+    FROM events
+    WHERE type = 'conversation_turn' AND timestamp >= ? AND timestamp <= ?
+    GROUP BY hour
+    ORDER BY hour
+  `).all(since, until) as Array<{ hour: number; turns: number }>;
+
+  return {
+    period: { since, until },
+    total_turns: stats.total_turns,
+    unique_speakers: stats.unique_speakers,
+    unique_listeners: stats.unique_listeners,
+    directed_turns: stats.directed_turns,
+    avg_distance: stats.avg_distance ?? 0,
+    top_pairs: pairs,
+    hourly_distribution: hourly,
+  };
+}
+
 export function batchSaveResidents(residents: Array<{
   id: string; x: number; y: number; facing: number;
   needs: Needs; wallet: number; is_sleeping: boolean;
@@ -272,7 +379,7 @@ export function batchSaveResidents(residents: Array<{
   const stmt = db.prepare(`
     UPDATE residents SET
       x = ?, y = ?, facing = ?,
-      hunger = ?, thirst = ?, energy = ?, bladder = ?, health = ?,
+      hunger = ?, thirst = ?, energy = ?, bladder = ?, health = ?, social = ?,
       wallet = ?, is_sleeping = ?, current_building = ?,
       current_job_id = ?, shift_start_time = ?, carrying_body_id = ?,
       law_breaking = ?, arrested_by = ?, prison_sentence_end = ?, carrying_suspect_id = ?
@@ -283,7 +390,7 @@ export function batchSaveResidents(residents: Array<{
     for (const r of residents) {
       stmt.run(
         r.x, r.y, r.facing,
-        r.needs.hunger, r.needs.thirst, r.needs.energy, r.needs.bladder, r.needs.health,
+        r.needs.hunger, r.needs.thirst, r.needs.energy, r.needs.bladder, r.needs.health, r.needs.social,
         r.wallet, r.is_sleeping ? 1 : 0, r.current_building,
         r.current_job_id ?? null, r.shift_start_time ?? null, r.carrying_body_id ?? null,
         JSON.stringify(r.law_breaking ?? []), r.arrested_by ?? null,
@@ -674,4 +781,216 @@ export function getTotalGithubRewards(): number {
 
 export function updateLastGithubClaimTime(id: string, worldTime: number): void {
   getDb().prepare('UPDATE residents SET last_github_claim_time = ? WHERE id = ?').run(worldTime, id);
+}
+
+// === Referral queries ===
+
+export interface ReferralRow {
+  id: string;
+  referrer_id: string;
+  referred_id: string;
+  referred_at: number;
+  claimed_at: number | null;
+  reward_amount: number;
+}
+
+export function insertReferral(referrerId: string, referredId: string, rewardAmount: number): void {
+  const id = uuid();
+  getDb().prepare(`
+    INSERT INTO referrals (id, referrer_id, referred_id, referred_at, reward_amount)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(id, referrerId, referredId, Date.now(), rewardAmount);
+}
+
+export function getReferralCount(referrerId: string): number {
+  const row = getDb().prepare('SELECT COUNT(*) as count FROM referrals WHERE referrer_id = ?').get(referrerId) as { count: number };
+  return row.count;
+}
+
+export function getClaimableReferrals(referrerId: string, maturityMs: number): Array<ReferralRow & { referred_name: string }> {
+  const cutoff = Date.now() - maturityMs;
+  return getDb().prepare(`
+    SELECT ref.*, r.preferred_name AS referred_name
+    FROM referrals ref
+    JOIN residents r ON ref.referred_id = r.id
+    WHERE ref.referrer_id = ?
+      AND ref.claimed_at IS NULL
+      AND r.status = 'ALIVE'
+      AND r.created_at <= ?
+  `).all(referrerId, cutoff) as Array<ReferralRow & { referred_name: string }>;
+}
+
+export function claimReferrals(referralIds: string[], currentTime: number): { count: number; total: number } {
+  if (referralIds.length === 0) return { count: 0, total: 0 };
+  const db = getDb();
+  const placeholders = referralIds.map(() => '?').join(',');
+  const result = db.prepare(`
+    UPDATE referrals SET claimed_at = ?
+    WHERE id IN (${placeholders}) AND claimed_at IS NULL
+  `).run(currentTime, ...referralIds);
+  const totalRow = db.prepare(`
+    SELECT COALESCE(SUM(reward_amount), 0) as total
+    FROM referrals WHERE id IN (${placeholders}) AND claimed_at = ?
+  `).get(...referralIds, currentTime) as { total: number };
+  return { count: result.changes, total: totalRow.total };
+}
+
+export function getReferralStats(referrerId: string, maturityMs: number): {
+  total: number; claimed: number; claimable: number; maturing: number; cap: number;
+} {
+  const db = getDb();
+  const cutoff = Date.now() - maturityMs;
+  const capRow = db.prepare('SELECT referral_cap FROM residents WHERE id = ?').get(referrerId) as { referral_cap: number } | undefined;
+  const cap = capRow?.referral_cap ?? 5;
+  const stats = db.prepare(`
+    SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN ref.claimed_at IS NOT NULL THEN 1 ELSE 0 END) as claimed,
+      SUM(CASE WHEN ref.claimed_at IS NULL AND r.status = 'ALIVE' AND r.created_at <= ? THEN 1 ELSE 0 END) as claimable,
+      SUM(CASE WHEN ref.claimed_at IS NULL AND r.status = 'ALIVE' AND r.created_at > ? THEN 1 ELSE 0 END) as maturing
+    FROM referrals ref
+    JOIN residents r ON ref.referred_id = r.id
+    WHERE ref.referrer_id = ?
+  `).get(cutoff, cutoff, referrerId) as { total: number; claimed: number; claimable: number; maturing: number };
+  return {
+    total: stats.total,
+    claimed: stats.claimed,
+    claimable: stats.claimable,
+    maturing: stats.maturing,
+    cap,
+  };
+}
+
+export function getRecentReferrals(limit: number = 5): Array<ReferralRow & { referrer_name: string; referrer_passport: string; referred_name: string }> {
+  return getDb().prepare(`
+    SELECT ref.*,
+      rr.preferred_name AS referrer_name, rr.passport_no AS referrer_passport,
+      rd.preferred_name AS referred_name
+    FROM referrals ref
+    JOIN residents rr ON ref.referrer_id = rr.id
+    JOIN residents rd ON ref.referred_id = rd.id
+    WHERE ref.claimed_at IS NOT NULL
+    ORDER BY ref.claimed_at DESC
+    LIMIT ?
+  `).all(limit) as Array<ReferralRow & { referrer_name: string; referrer_passport: string; referred_name: string }>;
+}
+
+export function getTotalReferralRewards(): number {
+  const row = getDb().prepare('SELECT COALESCE(SUM(reward_amount), 0) as total FROM referrals WHERE claimed_at IS NOT NULL').get() as { total: number };
+  return row.total;
+}
+
+export function updateReferredBy(residentId: string, referrerPassport: string): void {
+  getDb().prepare('UPDATE residents SET referred_by = ? WHERE id = ?').run(referrerPassport, residentId);
+}
+
+// === Conversation history queries ===
+
+export interface ConversationTurnRow {
+  id: number;
+  timestamp: number;
+  speaker_id: string;
+  speaker_name: string;
+  speaker_passport: string;
+  listener_id: string | null;
+  listener_name: string | null;
+  listener_passport: string | null;
+  text: string;
+  volume: string;
+  directed: boolean;
+}
+
+export function getConversationHistory(
+  residentId: string,
+  options: { since?: number; until?: number; withResident?: string; limit?: number }
+): ConversationTurnRow[] {
+  const { since, until, withResident, limit = 100 } = options;
+  const conditions = [
+    "e.type = 'speak'",
+    '(e.resident_id = ? OR e.target_id = ?)',
+  ];
+  const params: (string | number)[] = [residentId, residentId];
+
+  if (since) {
+    conditions.push('e.timestamp >= ?');
+    params.push(since);
+  }
+  if (until) {
+    conditions.push('e.timestamp <= ?');
+    params.push(until);
+  }
+  if (withResident) {
+    conditions.push('(e.resident_id = ? OR e.target_id = ?)');
+    params.push(withResident, withResident);
+  }
+
+  const cappedLimit = Math.min(Math.max(1, limit), 500);
+  params.push(cappedLimit);
+
+  return getDb().prepare(`
+    SELECT
+      e.id,
+      e.timestamp,
+      e.resident_id AS speaker_id,
+      r.preferred_name AS speaker_name,
+      r.passport_no AS speaker_passport,
+      e.target_id AS listener_id,
+      t.preferred_name AS listener_name,
+      t.passport_no AS listener_passport,
+      json_extract(e.data_json, '$.text') AS text,
+      json_extract(e.data_json, '$.volume') AS volume,
+      CASE WHEN e.target_id IS NOT NULL THEN 1 ELSE 0 END AS directed
+    FROM events e
+    LEFT JOIN residents r ON e.resident_id = r.id
+    LEFT JOIN residents t ON e.target_id = t.id
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY e.timestamp DESC
+    LIMIT ?
+  `).all(...params) as ConversationTurnRow[];
+}
+
+export function getConversationPartners(residentId: string, since?: number): Array<{
+  resident_id: string;
+  name: string;
+  passport_no: string;
+  turns: number;
+  last_spoke: number;
+}> {
+  const conditions = [
+    "e.type = 'speak'",
+    '(e.resident_id = ? OR e.target_id = ?)',
+    'other.id IS NOT NULL',
+    'other.id != ?',
+  ];
+  const params: (string | number)[] = [residentId, residentId, residentId];
+
+  if (since) {
+    conditions.push('e.timestamp >= ?');
+    params.push(since);
+  }
+
+  return getDb().prepare(`
+    SELECT
+      other.id AS resident_id,
+      other.preferred_name AS name,
+      other.passport_no AS passport_no,
+      COUNT(*) AS turns,
+      MAX(e.timestamp) AS last_spoke
+    FROM events e
+    LEFT JOIN residents other ON (
+      CASE
+        WHEN e.resident_id = ? THEN e.target_id
+        ELSE e.resident_id
+      END = other.id
+    )
+    WHERE ${conditions.join(' AND ')}
+    GROUP BY other.id
+    ORDER BY last_spoke DESC
+  `).all(residentId, ...params) as Array<{
+    resident_id: string;
+    name: string;
+    passport_no: string;
+    turns: number;
+    last_spoke: number;
+  }>;
 }

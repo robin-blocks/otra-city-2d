@@ -17,10 +17,12 @@ export interface PerceptionUpdate {
     energy: number;
     bladder: number;
     health: number;
+    social: number;
     wallet: number;
     inventory: InventoryItem[];
     status: string;
     is_sleeping: boolean;
+    sleep_started_at: number | null;  // real-time ms when sleep began, null if not sleeping
     current_building: string | null;
     employment: { job: string; on_shift: boolean } | null;
     law_breaking: string[];
@@ -114,6 +116,8 @@ export type ServerMessage =
   | { type: 'spawn'; resident: ResidentState }
   | { type: 'death'; resident_id: string; cause: string }
   | { type: 'event'; event_type: string; data: Record<string, unknown> }
+  | { type: 'pain'; message: string; source: string; intensity: 'mild' | 'severe' | 'agony'; needs: Record<string, number> }
+  | { type: 'system_announcement'; title: string; message: string; version: string }
   | { type: 'error'; code: string; message: string };
 
 // === Client/Agent -> Server messages ===
@@ -152,7 +156,9 @@ export type ClientMessage =
   | { type: 'link_github'; params: { github_username: string }; request_id?: string }
   | { type: 'claim_issue'; params: { issue_number: number }; request_id?: string }
   | { type: 'claim_pr'; params: { pr_number: number }; request_id?: string }
-  | { type: 'list_claims'; request_id?: string };
+  | { type: 'list_claims'; request_id?: string }
+  | { type: 'get_referral_link'; request_id?: string }
+  | { type: 'claim_referrals'; request_id?: string };
 
 // === Registration ===
 
@@ -172,6 +178,7 @@ export interface PassportRegistration {
   skin_tone?: number;
   distinguishing_feature?: string;
   bio?: string;
+  referral_code?: string;
 }
 
 export interface PassportResponse {

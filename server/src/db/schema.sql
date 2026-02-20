@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS residents (
     energy REAL NOT NULL DEFAULT 40,
     bladder REAL NOT NULL DEFAULT 60,
     health REAL NOT NULL DEFAULT 100,
+    social REAL NOT NULL DEFAULT 100,
     wallet INTEGER NOT NULL DEFAULT 5,
     is_sleeping INTEGER NOT NULL DEFAULT 0,
     current_building TEXT,
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
 CREATE INDEX IF NOT EXISTS idx_events_resident ON events(resident_id);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_events_type_timestamp ON events(type, timestamp);
 
 CREATE TABLE IF NOT EXISTS world_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -143,6 +145,18 @@ CREATE TABLE IF NOT EXISTS github_claims (
     UNIQUE(github_number, claim_type)
 );
 CREATE INDEX IF NOT EXISTS idx_github_claims_resident ON github_claims(resident_id);
+
+-- === Referrals ===
+
+CREATE TABLE IF NOT EXISTS referrals (
+    id TEXT PRIMARY KEY,
+    referrer_id TEXT NOT NULL REFERENCES residents(id),
+    referred_id TEXT NOT NULL REFERENCES residents(id) UNIQUE,
+    referred_at INTEGER NOT NULL,
+    claimed_at INTEGER,
+    reward_amount INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id);
 
 -- === Law enforcement ===
 

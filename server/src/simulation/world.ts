@@ -2,9 +2,11 @@ import type { Needs, VisibleResident, VisibleForageable, Build } from '@otra/sha
 import {
   WALK_SPEED, RUN_SPEED, TILE_SIZE, RESIDENT_HITBOX,
   HUNGER_DECAY_PER_SEC, THIRST_DECAY_PER_SEC, ENERGY_PASSIVE_DECAY_PER_SEC,
+  ENERGY_COST_WALK_PER_TILE, ENERGY_COST_RUN_PER_TILE,
   BLADDER_FILL_PER_SEC, HEALTH_DRAIN_HUNGER, HEALTH_DRAIN_THIRST,
-  HEALTH_RECOVERY_PER_SEC, HEALTH_RECOVERY_THRESHOLD,
-  SLEEP_ROUGH_RATE_PER_SEC, SLEEP_BAG_RATE_PER_SEC,
+  HEALTH_RECOVERY_PER_SEC, HEALTH_RECOVERY_THRESHOLD, HEALTH_DRAIN_SOCIAL,
+  SOCIAL_DECAY_PER_SEC, SOCIAL_RECOVERY_PER_SEC,
+  SLEEP_ROUGH_RATE_PER_SEC, SLEEP_BAG_RATE_PER_SEC, SLEEP_AUTO_WAKE_THRESHOLD,
   TRAIN_INTERVAL_SEC, STARTING_QUID, FOV_ANGLE, FOV_RANGE, AMBIENT_RANGE,
   NIGHT_VISION_MULTIPLIER,
   NORMAL_VOICE_RANGE, WHISPER_RANGE, SHOUT_RANGE, WALL_SOUND_FACTOR,
@@ -17,6 +19,12 @@ import {
   SPRING_MAX_USES, SPRING_REGROW_GAME_HOURS,
   SOCIAL_CONVERSATION_RANGE, SOCIAL_CONVERSATION_DECAY_REDUCTION,
   SOCIAL_CONVERSATION_WINDOW, SOCIAL_CONVERSATION_ENERGY_RECOVERY,
+  NEEDS_WARNING_COOLDOWN_MS, NEEDS_WARNING_THRESHOLD_HUNGER,
+  NEEDS_WARNING_THRESHOLD_THIRST, NEEDS_WARNING_THRESHOLD_ENERGY,
+  NEEDS_WARNING_THRESHOLD_BLADDER, NEEDS_WARNING_THRESHOLD_SOCIAL,
+  NEARBY_RESIDENT_COOLDOWN_MS,
+  BUILDING_NEARBY_COOLDOWN_MS, BUILDING_NEARBY_RANGE,
+  PAIN_THRESHOLDS, PAIN_COOLDOWNS,
 } from '@otra/shared';
 import type { WebSocket } from 'ws';
 import { TileMap } from './map.js';
@@ -32,6 +40,8 @@ import { enterBuilding } from '../buildings/building-actions.js';
 import { sendWebhook } from '../network/webhooks.js';
 import { updateShift } from '../economy/jobs.js';
 import { initShopStock, restockShop } from '../economy/shop.js';
+import { getPainMessage } from './pain-messages.js';
+import type { PainSource, PainIntensity } from './pain-messages.js';
 
 export interface ForageableNodeState {
   id: string;
@@ -107,12 +117,26 @@ export interface ResidentEntity {
   loiterX: number;
   loiterY: number;
   loiterTimer: number;
+  // Sleep tracking (runtime only)
+  sleepStartedAt: number;  // real-time ms when sleep started (0 if not sleeping)
+  // Webhook throttle tracking (runtime only)
+  lastNeedsWarning: { hunger: number; thirst: number; energy: number; bladder: number; social: number };
+  lastNearbyResidentAlert: Map<string, number>;  // resident_id → last alert timestamp
+  lastBuildingNearbyAlert: Map<string, number>;   // building_id → last alert timestamp
+  previouslyVisibleResidents: Set<string>;         // track who was visible last tick
+  // Pain signals (runtime only)
+  pendingPainMessages: Array<{ message: string; source: string; intensity: 'mild' | 'severe' | 'agony'; needs: Record<string, number> }>;
+  lastPainTime: { hunger: number; thirst: number; social: number; health: number };
+  // Conversation state tracking (runtime only)
+  wasConversing: boolean;
+  // Request deduplication (runtime only, not persisted)
+  recentRequestIds: Map<string, number>;  // request_id → timestamp (ms)
 }
 
 /** Compute visible condition for a resident based on their needs */
 export function computeCondition(r: ResidentEntity): 'healthy' | 'struggling' | 'critical' {
   if (r.needs.health < 20 || r.needs.hunger <= 0 || r.needs.thirst <= 0) return 'critical';
-  if (r.needs.hunger < 20 || r.needs.thirst < 20 || r.needs.energy < 10 || r.needs.health < 50) return 'struggling';
+  if (r.needs.hunger < 20 || r.needs.thirst < 20 || r.needs.energy < 10 || r.needs.health < 50 || r.needs.social <= 0) return 'struggling';
   return 'healthy';
 }
 
@@ -187,6 +211,7 @@ export class World {
         energy: row.energy,
         bladder: row.bladder,
         health: row.health,
+        social: row.social ?? 100,
       },
       wallet: row.wallet,
       inventory: getInventory(row.id).map(inv => ({
@@ -229,6 +254,15 @@ export class World {
       loiterX: row.x,
       loiterY: row.y,
       loiterTimer: 0,
+      sleepStartedAt: row.is_sleeping === 1 ? Date.now() : 0,
+      lastNeedsWarning: { hunger: 0, thirst: 0, energy: 0, bladder: 0, social: 0 },
+      lastNearbyResidentAlert: new Map(),
+      lastBuildingNearbyAlert: new Map(),
+      previouslyVisibleResidents: new Set(),
+      pendingPainMessages: [],
+      lastPainTime: { hunger: 0, thirst: 0, social: 0, health: 0 },
+      wasConversing: false,
+      recentRequestIds: new Map(),
     };
 
     // On load: if arrested_by is set but no officer is carrying this resident, clear arrest state
@@ -371,6 +405,23 @@ export class World {
       // Social bonus: reduce hunger/thirst decay when near other awake residents
       // Enhanced bonus when actively conversing (within last SOCIAL_CONVERSATION_WINDOW seconds)
       const isConversing = Date.now() - r.lastConversationTime < SOCIAL_CONVERSATION_WINDOW * 1000;
+
+      // Notify on conversation state transitions
+      if (isConversing && !r.wasConversing) {
+        const partner = this.findConversationPartner(r);
+        if (partner) {
+          r.pendingNotifications.push(
+            `Conversation with ${partner.preferredName} is boosting your social wellbeing.`
+          );
+        }
+      }
+      if (!isConversing && r.wasConversing) {
+        r.pendingNotifications.push(
+          'Conversation ended. Speak with a nearby resident to maintain social recovery.'
+        );
+      }
+      r.wasConversing = isConversing;
+
       const socialMultiplier = isConversing
         ? (1 - SOCIAL_CONVERSATION_DECAY_REDUCTION)
         : r.socialNearbyCount > 0 ? (1 - SOCIAL_DECAY_REDUCTION) : 1;
@@ -384,6 +435,12 @@ export class World {
       // Bladder fills
       r.needs.bladder = Math.min(100, r.needs.bladder + BLADDER_FILL_PER_SEC * dt);
 
+      // Social need: decays constantly, recovers during mutual conversation
+      r.needs.social = Math.max(0, r.needs.social - SOCIAL_DECAY_PER_SEC * dt);
+      if (isConversing) {
+        r.needs.social = Math.min(100, r.needs.social + SOCIAL_RECOVERY_PER_SEC * dt);
+      }
+
       // Energy: passive decay or sleep recovery
       if (r.isSleeping) {
         // Recovery rate depends on equipment (sleeping bag)
@@ -391,10 +448,11 @@ export class World {
         const recoveryRate = hasSleepingBag ? SLEEP_BAG_RATE_PER_SEC : SLEEP_ROUGH_RATE_PER_SEC;
         r.needs.energy = Math.min(100, r.needs.energy + recoveryRate * dt);
 
-        // Auto-wake at 100
-        if (r.needs.energy >= 100) {
+        // Auto-wake at threshold (80) — shorter naps
+        if (r.needs.energy >= SLEEP_AUTO_WAKE_THRESHOLD) {
           r.isSleeping = false;
-          r.needs.energy = 100;
+          r.sleepStartedAt = 0;
+          r.needs.energy = Math.min(100, r.needs.energy);
         }
       } else {
         r.needs.energy = Math.max(0, r.needs.energy - ENERGY_PASSIVE_DECAY_PER_SEC * dt);
@@ -406,11 +464,11 @@ export class World {
 
         // Walking costs energy
         if (r.speed === 'walk') {
-          const moveCost = 0.5 / TILE_SIZE; // 0.5 per tile-equivalent
+          const moveCost = ENERGY_COST_WALK_PER_TILE / TILE_SIZE;
           const moveSpeed = Math.sqrt(r.velocityX ** 2 + r.velocityY ** 2);
           r.needs.energy = Math.max(0, r.needs.energy - moveCost * moveSpeed * dt);
         } else if (r.speed === 'run') {
-          const moveCost = 1.5 / TILE_SIZE;
+          const moveCost = ENERGY_COST_RUN_PER_TILE / TILE_SIZE;
           const moveSpeed = Math.sqrt(r.velocityX ** 2 + r.velocityY ** 2);
           r.needs.energy = Math.max(0, r.needs.energy - moveCost * moveSpeed * dt);
         }
@@ -426,6 +484,7 @@ export class World {
         r.velocityY = 0;
         r.speed = 'stop';
         r.isSleeping = true;
+        r.sleepStartedAt = Date.now();
         // Cancel any active path
         r.pathWaypoints = null;
         r.pathTargetBuilding = null;
@@ -442,6 +501,9 @@ export class World {
       if (r.needs.thirst <= 0) {
         r.needs.health = Math.max(0, r.needs.health - HEALTH_DRAIN_THIRST * dt);
       }
+      if (r.needs.social <= 0) {
+        r.needs.health = Math.max(0, r.needs.health - HEALTH_DRAIN_SOCIAL * dt);
+      }
 
       // Webhook alert when health drops below 50 (checked once per ~10 seconds to avoid spam)
       if (r.needs.health > 0 && r.needs.health < 50 && (r.needs.hunger <= 0 || r.needs.thirst <= 0)) {
@@ -456,15 +518,110 @@ export class World {
         }
       }
 
+      // === Needs warning webhooks (proactive alerts) ===
+      if (r.webhookUrl && !r.isDead) {
+        const now = Date.now();
+
+        // Hunger warning
+        if (r.needs.hunger < NEEDS_WARNING_THRESHOLD_HUNGER && r.needs.hunger > 0 &&
+            now - r.lastNeedsWarning.hunger > NEEDS_WARNING_COOLDOWN_MS) {
+          r.lastNeedsWarning.hunger = now;
+          // Find nearest berry bush with uses remaining
+          let nearestFood: { type: string; id: string; distance: number; uses: number } | null = null;
+          for (const [, node] of this.forageableNodes) {
+            if (node.type !== 'berry_bush' || node.usesRemaining <= 0) continue;
+            const d = Math.hypot(node.x - r.x, node.y - r.y);
+            if (!nearestFood || d < nearestFood.distance) {
+              nearestFood = { type: 'berry_bush', id: node.id, distance: Math.round(d), uses: node.usesRemaining };
+            }
+          }
+          const hasFood = r.inventory.some(i => i.type === 'bread' || i.type === 'wild_berries');
+          sendWebhook(r, 'needs_warning', {
+            need: 'hunger', value: Math.round(r.needs.hunger * 10) / 10,
+            urgency: r.needs.hunger < 15 ? 'critical' : 'moderate',
+            suggestion: hasFood
+              ? 'Eat food from your inventory (use eat action)'
+              : nearestFood
+                ? `Forage wild_berries at ${nearestFood.id} (${nearestFood.distance}px away, ${nearestFood.uses} uses left), or buy bread at council-supplies`
+                : 'Buy bread at council-supplies shop',
+            nearest_food_source: nearestFood,
+            has_food_in_inventory: hasFood,
+          });
+        }
+
+        // Thirst warning
+        if (r.needs.thirst < NEEDS_WARNING_THRESHOLD_THIRST && r.needs.thirst > 0 &&
+            now - r.lastNeedsWarning.thirst > NEEDS_WARNING_COOLDOWN_MS) {
+          r.lastNeedsWarning.thirst = now;
+          let nearestWater: { type: string; id: string; distance: number; uses: number } | null = null;
+          for (const [, node] of this.forageableNodes) {
+            if (node.type !== 'fresh_spring' || node.usesRemaining <= 0) continue;
+            const d = Math.hypot(node.x - r.x, node.y - r.y);
+            if (!nearestWater || d < nearestWater.distance) {
+              nearestWater = { type: 'fresh_spring', id: node.id, distance: Math.round(d), uses: node.usesRemaining };
+            }
+          }
+          const hasWater = r.inventory.some(i => i.type === 'water' || i.type === 'fresh_water');
+          sendWebhook(r, 'needs_warning', {
+            need: 'thirst', value: Math.round(r.needs.thirst * 10) / 10,
+            urgency: r.needs.thirst < 15 ? 'critical' : 'moderate',
+            suggestion: hasWater
+              ? 'Drink water from your inventory (use drink action)'
+              : nearestWater
+                ? `Forage fresh_water at ${nearestWater.id} (${nearestWater.distance}px away, ${nearestWater.uses} uses left), or buy water at council-supplies`
+                : 'Buy water at council-supplies shop',
+            nearest_water_source: nearestWater,
+            has_water_in_inventory: hasWater,
+          });
+        }
+
+        // Energy warning
+        if (r.needs.energy < NEEDS_WARNING_THRESHOLD_ENERGY && !r.isSleeping &&
+            now - r.lastNeedsWarning.energy > NEEDS_WARNING_COOLDOWN_MS) {
+          r.lastNeedsWarning.energy = now;
+          sendWebhook(r, 'needs_warning', {
+            need: 'energy', value: Math.round(r.needs.energy * 10) / 10,
+            urgency: r.needs.energy < 15 ? 'critical' : 'moderate',
+            suggestion: 'Find a safe place and use the sleep action to rest. You will auto-wake at 80 energy.',
+          });
+        }
+
+        // Bladder warning
+        if (r.needs.bladder > NEEDS_WARNING_THRESHOLD_BLADDER &&
+            now - r.lastNeedsWarning.bladder > NEEDS_WARNING_COOLDOWN_MS) {
+          r.lastNeedsWarning.bladder = now;
+          sendWebhook(r, 'needs_warning', {
+            need: 'bladder', value: Math.round(r.needs.bladder * 10) / 10,
+            urgency: r.needs.bladder > 90 ? 'critical' : 'moderate',
+            suggestion: 'Enter a building with a toilet and use the use_toilet action. Accidents cost 5 QUID.',
+          });
+        }
+
+        // Social warning
+        if (r.needs.social < NEEDS_WARNING_THRESHOLD_SOCIAL && r.needs.social > 0 &&
+            now - r.lastNeedsWarning.social > NEEDS_WARNING_COOLDOWN_MS) {
+          r.lastNeedsWarning.social = now;
+          sendWebhook(r, 'needs_warning', {
+            need: 'social', value: Math.round(r.needs.social * 10) / 10,
+            urgency: r.needs.social < 15 ? 'critical' : 'moderate',
+            suggestion: 'Find another resident and have a conversation. Speak to them and wait for a response. Social bonuses also reduce hunger/thirst decay by 30%.',
+          });
+        }
+      }
+
       // Health recovery when all needs above threshold
       if (
         r.needs.hunger > HEALTH_RECOVERY_THRESHOLD &&
         r.needs.thirst > HEALTH_RECOVERY_THRESHOLD &&
         r.needs.energy > HEALTH_RECOVERY_THRESHOLD &&
+        r.needs.social > 0 &&
         r.needs.health < 100
       ) {
         r.needs.health = Math.min(100, r.needs.health + HEALTH_RECOVERY_PER_SEC * dt);
       }
+
+      // Pain signals — visceral messages to connected agents
+      this.checkPainSignals(r, Date.now());
 
       // Bladder accident at 100
       if (r.needs.bladder >= 100) {
@@ -474,6 +631,62 @@ export class World {
           fee: 5, wallet_after: r.wallet
         });
       }
+    }
+  }
+
+  /** Check and emit pain signals for a resident based on their current needs */
+  private checkPainSignals(r: ResidentEntity, now: number): void {
+    if (r.isDead || r.isSleeping) return;
+
+    const needsSnapshot: Record<string, number> = {
+      hunger: Math.round(r.needs.hunger * 10) / 10,
+      thirst: Math.round(r.needs.thirst * 10) / 10,
+      energy: Math.round(r.needs.energy * 10) / 10,
+      bladder: Math.round(r.needs.bladder * 10) / 10,
+      health: Math.round(r.needs.health * 10) / 10,
+      social: Math.round(r.needs.social * 10) / 10,
+    };
+
+    const sources: Array<{ source: PainSource; value: number; inverted?: boolean }> = [
+      { source: 'hunger', value: r.needs.hunger },
+      { source: 'thirst', value: r.needs.thirst },
+      { source: 'social', value: r.needs.social },
+      // Health pain only fires when health is actively draining
+      ...((r.needs.hunger <= 0 || r.needs.thirst <= 0 || r.needs.social <= 0)
+        ? [{ source: 'health' as PainSource, value: r.needs.health }]
+        : []),
+    ];
+
+    for (const { source, value } of sources) {
+      const thresholds = PAIN_THRESHOLDS[source];
+
+      // Determine intensity tier (most severe first)
+      let intensity: PainIntensity | null = null;
+      if (value < thresholds.agony) intensity = 'agony';
+      else if (value < thresholds.severe) intensity = 'severe';
+      else if (value < thresholds.mild) intensity = 'mild';
+
+      if (!intensity) continue;
+
+      // Check cooldown for this source
+      const cooldown = PAIN_COOLDOWNS[intensity];
+      if (now - r.lastPainTime[source] < cooldown) continue;
+
+      // Emit pain message
+      r.lastPainTime[source] = now;
+      r.pendingPainMessages.push({
+        message: getPainMessage(source, intensity),
+        source,
+        intensity,
+        needs: needsSnapshot,
+      });
+    }
+  }
+
+  /** Clear pending pain messages after they've been sent */
+  clearPendingPainMessages(): void {
+    for (const [, r] of this.residents) {
+      r.pendingPainMessages = [];
     }
   }
 
@@ -775,10 +988,12 @@ export class World {
           energy: Math.round(resident.needs.energy * 10) / 10,
           bladder: Math.round(resident.needs.bladder * 10) / 10,
           health: Math.round(resident.needs.health * 10) / 10,
+          social: Math.round(resident.needs.social * 10) / 10,
           wallet: resident.wallet,
           inventory: resident.inventory,
           status: resident.arrestedBy ? 'arrested' : 'imprisoned',
           is_sleeping: false,
+          sleep_started_at: null,
           current_building: resident.currentBuilding,
           employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
           law_breaking: resident.lawBreaking,
@@ -919,7 +1134,7 @@ export class World {
           // Brain pin: push notification when speech is directed at this resident
           if (speech.directedTo === resident.id) {
             resident.pendingNotifications.push(
-              `${other.preferredName} said to you: "${speech.text}"`
+              `${other.preferredName} said to you: "${speech.text}" — Stop and respond within 30s for social recovery.`
             );
           }
         }
@@ -966,6 +1181,10 @@ export class World {
           interactions.push('link_github');
         }
         interactions.push('list_claims');
+      }
+      // Tourist Information: referral actions
+      if (resident.currentBuilding === 'tourist-info') {
+        interactions.push('get_referral_link', 'claim_referrals');
       }
     }
 
@@ -1043,10 +1262,12 @@ export class World {
         energy: Math.round(resident.needs.energy * 10) / 10,
         bladder: Math.round(resident.needs.bladder * 10) / 10,
         health: Math.round(resident.needs.health * 10) / 10,
+        social: Math.round(resident.needs.social * 10) / 10,
         wallet: resident.wallet,
         inventory: resident.inventory,
         status: resident.isDead ? 'dead' : resident.isSleeping ? 'sleeping' : resident.speed !== 'stop' ? 'walking' : 'idle',
         is_sleeping: resident.isSleeping,
+        sleep_started_at: resident.isSleeping ? resident.sleepStartedAt : null,
         current_building: resident.currentBuilding,
         employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
         law_breaking: resident.lawBreaking,
@@ -1170,10 +1391,12 @@ export class World {
         energy: Math.round(resident.needs.energy * 10) / 10,
         bladder: Math.round(resident.needs.bladder * 10) / 10,
         health: Math.round(resident.needs.health * 10) / 10,
+        social: Math.round(resident.needs.social * 10) / 10,
         wallet: resident.wallet,
         inventory: resident.inventory,
         status: resident.isDead ? 'dead' : resident.isSleeping ? 'sleeping' : resident.speed !== 'stop' ? 'walking' : 'idle',
         is_sleeping: resident.isSleeping,
+        sleep_started_at: resident.isSleeping ? resident.sleepStartedAt : null,
         current_building: resident.currentBuilding,
         employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
         law_breaking: resident.lawBreaking,
@@ -1187,6 +1410,25 @@ export class World {
       interactions: [], // spectators can't interact
       notifications: [...resident.pendingNotifications],
     };
+  }
+
+  /** Find the nearest resident who is also in an active conversation (for notifications) */
+  private findConversationPartner(resident: ResidentEntity): ResidentEntity | null {
+    const now = Date.now();
+    let closest: ResidentEntity | null = null;
+    let closestDist = Infinity;
+    for (const [id, other] of this.residents) {
+      if (id === resident.id || other.isDead) continue;
+      if (now - other.lastConversationTime >= SOCIAL_CONVERSATION_WINDOW * 1000) continue;
+      const dx = other.x - resident.x;
+      const dy = other.y - resident.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < closestDist) {
+        closestDist = dist;
+        closest = other;
+      }
+    }
+    return closest;
   }
 
   /** Fire speech_heard webhooks and update conversation timestamps */
@@ -1225,6 +1467,20 @@ export class World {
             listener.lastConversationTime = now;
           }
 
+          // Log conversation turn for analytics
+          logEvent('conversation_turn', speakerId, listenerId, null, speaker.x, speaker.y, {
+            text: speech.text,
+            volume: speech.volume,
+            directed: speech.directedTo === listenerId,
+            distance: Math.round(dist * 10) / 10,
+            speaker_x: Math.round(speaker.x),
+            speaker_y: Math.round(speaker.y),
+            listener_x: Math.round(listener.x),
+            listener_y: Math.round(listener.y),
+            speaker_name: speaker.preferredName,
+            listener_name: listener.preferredName,
+          });
+
           // Webhook: fire speech_heard for listeners with webhookUrl
           if (listener.webhookUrl) {
             const isDirected = speech.directedTo === listenerId;
@@ -1232,6 +1488,11 @@ export class World {
             // Throttle undirected speech webhooks to 1/second; directed always fires
             if (isDirected || now - listener.lastSpeechWebhookTime >= 1000) {
               listener.lastSpeechWebhookTime = now;
+              // Build inventory summary for context
+              const inventorySummary: Record<string, number> = {};
+              for (const item of listener.inventory) {
+                inventorySummary[item.type] = (inventorySummary[item.type] ?? 0) + item.quantity;
+              }
               sendWebhook(listener, 'speech_heard', {
                 from_id: speakerId,
                 from_name: speaker.preferredName,
@@ -1239,6 +1500,13 @@ export class World {
                 volume: speech.volume,
                 distance: Math.round(dist * 10) / 10,
                 directed: isDirected,
+                speaker_condition: computeCondition(speaker),
+                your_inventory_summary: inventorySummary,
+                your_needs_summary: {
+                  hunger: Math.round(listener.needs.hunger * 10) / 10,
+                  thirst: Math.round(listener.needs.thirst * 10) / 10,
+                  energy: Math.round(listener.needs.energy * 10) / 10,
+                },
               });
             }
           }
@@ -1247,6 +1515,71 @@ export class World {
         // Speaker gets conversation bonus only if someone else heard them within range
         if (anyListenerInConversationRange) {
           speaker.lastConversationTime = now;
+        }
+      }
+    }
+  }
+
+  /** Fire nearby_resident and building_nearby webhooks — called at 4 Hz */
+  checkNearbyAlerts(): void {
+    const now = Date.now();
+    const visionMult = this.getVisionMultiplier();
+    const effectiveAmbientRange = AMBIENT_RANGE * visionMult;
+
+    for (const [residentId, r] of this.residents) {
+      if (r.isDead || !r.webhookUrl) continue;
+
+      // --- nearby_resident: fire when a new resident enters visibility ---
+      const currentlyVisible = new Set<string>();
+
+      for (const [otherId, other] of this.residents) {
+        if (otherId === residentId || other.isDead) continue;
+        const dist = Math.hypot(other.x - r.x, other.y - r.y);
+        if (dist <= effectiveAmbientRange) {
+          currentlyVisible.add(otherId);
+
+          // Was this resident NOT visible last tick? → new arrival
+          if (!r.previouslyVisibleResidents.has(otherId)) {
+            const lastAlert = r.lastNearbyResidentAlert.get(otherId) ?? 0;
+            if (now - lastAlert > NEARBY_RESIDENT_COOLDOWN_MS) {
+              r.lastNearbyResidentAlert.set(otherId, now);
+              sendWebhook(r, 'nearby_resident', {
+                resident_id: otherId,
+                name: other.preferredName,
+                distance: Math.round(dist),
+                condition: computeCondition(other),
+                is_sleeping: other.isSleeping,
+                is_dead: other.isDead,
+                current_building: other.currentBuilding,
+              });
+            }
+          }
+        }
+      }
+      r.previouslyVisibleResidents = currentlyVisible;
+
+      // --- building_nearby: fire when resident is near an unvisited building ---
+      if (!r.isSleeping && !r.currentBuilding) {
+        for (const bldg of this.map.data.buildings) {
+          const bldgCenterX = bldg.tileX * TILE_SIZE + (bldg.widthTiles * TILE_SIZE) / 2;
+          const bldgCenterY = bldg.tileY * TILE_SIZE + (bldg.heightTiles * TILE_SIZE) / 2;
+          const dist = Math.hypot(bldgCenterX - r.x, bldgCenterY - r.y);
+
+          if (dist <= BUILDING_NEARBY_RANGE) {
+            const lastAlert = r.lastBuildingNearbyAlert.get(bldg.id) ?? 0;
+            if (now - lastAlert > BUILDING_NEARBY_COOLDOWN_MS) {
+              r.lastBuildingNearbyAlert.set(bldg.id, now);
+              const door = bldg.doors[0];
+              sendWebhook(r, 'building_nearby', {
+                building_id: bldg.id,
+                building_name: bldg.name,
+                building_type: bldg.type,
+                distance: Math.round(dist),
+                door_x: door ? door.tileX * TILE_SIZE + TILE_SIZE / 2 : bldgCenterX,
+                door_y: door ? door.tileY * TILE_SIZE + TILE_SIZE / 2 : bldgCenterY,
+              });
+            }
+          }
         }
       }
     }

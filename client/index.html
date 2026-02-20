@@ -2,8 +2,15 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
   <title>Otra City</title>
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-ZTVR4HWLHL"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-ZTVR4HWLHL');
+  </script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a1a; }
@@ -235,6 +242,67 @@
       user-select: none;
     }
     #spectator-recentre:hover { background: rgba(80, 40, 130, 0.95); }
+
+    /* === Mobile responsive layout === */
+    @media (max-width: 600px) {
+      /* Landing panel */
+      #landing { width: calc(100vw - 32px); max-width: 320px; padding: 16px; top: 8px; left: 8px; }
+      #landing h1 { font-size: 20px; }
+      .landing-body p { font-size: 12px; }
+      .landing-btn { font-size: 13px; padding: 8px; }
+      .landing-hint { font-size: 10px; }
+
+      /* Top-right HUD area */
+      #top-right { top: 6px; right: 6px; gap: 4px; }
+
+      /* Compact need bars — short labels via data attribute */
+      #hud { font-size: 11px; }
+      .need-bar { margin-bottom: 2px; }
+      .need-bar-label { font-size: 0; width: 28px; }
+      .need-bar-label::after { content: attr(data-short); font-size: 10px; color: #eee; }
+      .need-bar-bg { width: 60px; height: 8px; }
+      .need-bar-val { width: 28px; font-size: 10px; margin-left: 2px; }
+
+      /* Compact clock */
+      #clock .clock-time { font-size: 14px; }
+      #clock .clock-day { font-size: 9px; }
+
+      /* Spectator banner — anchor top-left to avoid HUD overlap */
+      #spectator-banner {
+        font-size: 11px; padding: 4px 10px;
+        max-width: calc(100vw - 16px);
+        left: 8px; transform: none;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      #spectator-recentre { left: 8px; transform: none; top: 36px; font-size: 11px; padding: 3px 10px; }
+
+      /* Event feed — smaller on mobile */
+      #event-feed { width: 200px; max-height: 120px; font-size: 10px; bottom: 6px; right: 6px; }
+      .event-item { margin-bottom: 2px; }
+
+      /* Activity feed (homepage) */
+      #activity-feed { width: calc(100vw - 16px); max-width: 260px; bottom: 6px; right: 6px; padding: 8px; }
+      #activity-feed-list { max-height: 150px; font-size: 11px; }
+      .feed-item { line-height: 1.5; }
+
+      /* Spectator inventory */
+      #spectator-inventory { bottom: 6px; left: 6px; padding: 6px 8px; font-size: 11px; min-width: auto; }
+      .spec-inv-wallet { font-size: 12px; margin-bottom: 4px; }
+
+      /* Chat input — responsive width */
+      #chat-input { width: calc(100vw - 24px); max-width: 400px; font-size: 13px; padding: 6px 10px; }
+
+      /* Interaction prompts */
+      #interaction-prompts { font-size: 11px; bottom: 36px; }
+
+      /* All modals — fit viewport */
+      #inventory-overlay, #shop-overlay, #inspect-overlay, #building-info-overlay {
+        min-width: auto; max-width: calc(100vw - 32px); width: calc(100vw - 32px); padding: 16px;
+      }
+      #inventory-overlay h2, #shop-overlay h2 { font-size: 14px; }
+      .shop-item { flex-wrap: wrap; gap: 4px; }
+      .shop-item-price { margin: 0 8px 0 0; }
+    }
   </style>
 </head>
 <body>
@@ -258,11 +326,12 @@
     </div>
     <div id="top-right">
       <div id="hud" style="display:none;">
-        <div class="need-bar"><span class="need-bar-label">Hunger</span><span class="need-bar-bg"><span class="need-bar-fill" id="hunger-bar" style="width:80%"></span></span><span class="need-bar-val" id="hunger-val">80</span></div>
-        <div class="need-bar"><span class="need-bar-label">Thirst</span><span class="need-bar-bg"><span class="need-bar-fill" id="thirst-bar" style="width:80%"></span></span><span class="need-bar-val" id="thirst-val">80</span></div>
-        <div class="need-bar"><span class="need-bar-label">Energy</span><span class="need-bar-bg"><span class="need-bar-fill" id="energy-bar" style="width:80%"></span></span><span class="need-bar-val" id="energy-val">80</span></div>
-        <div class="need-bar"><span class="need-bar-label">Bladder</span><span class="need-bar-bg"><span class="need-bar-fill" id="bladder-bar" style="width:20%"></span></span><span class="need-bar-val" id="bladder-val">20</span></div>
-        <div class="need-bar"><span class="need-bar-label">Health</span><span class="need-bar-bg"><span class="need-bar-fill" id="health-bar" style="width:100%"></span></span><span class="need-bar-val" id="health-val">100</span></div>
+        <div class="need-bar"><span class="need-bar-label" data-short="HGR">Hunger</span><span class="need-bar-bg"><span class="need-bar-fill" id="hunger-bar" style="width:80%"></span></span><span class="need-bar-val" id="hunger-val">80</span></div>
+        <div class="need-bar"><span class="need-bar-label" data-short="THR">Thirst</span><span class="need-bar-bg"><span class="need-bar-fill" id="thirst-bar" style="width:80%"></span></span><span class="need-bar-val" id="thirst-val">80</span></div>
+        <div class="need-bar"><span class="need-bar-label" data-short="NRG">Energy</span><span class="need-bar-bg"><span class="need-bar-fill" id="energy-bar" style="width:80%"></span></span><span class="need-bar-val" id="energy-val">80</span></div>
+        <div class="need-bar"><span class="need-bar-label" data-short="BDR">Bladder</span><span class="need-bar-bg"><span class="need-bar-fill" id="bladder-bar" style="width:20%"></span></span><span class="need-bar-val" id="bladder-val">20</span></div>
+        <div class="need-bar"><span class="need-bar-label" data-short="SOC">Social</span><span class="need-bar-bg"><span class="need-bar-fill" id="social-bar" style="width:100%"></span></span><span class="need-bar-val" id="social-val">100</span></div>
+        <div class="need-bar"><span class="need-bar-label" data-short="HP">Health</span><span class="need-bar-bg"><span class="need-bar-fill" id="health-bar" style="width:100%"></span></span><span class="need-bar-val" id="health-val">100</span></div>
       </div>
       <div id="clock">
         <div class="clock-time" id="clock-time">06:00</div>

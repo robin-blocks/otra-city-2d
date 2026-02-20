@@ -26,6 +26,7 @@ export interface Needs {
   energy: number;     // 100 = rested, 0 = exhausted
   bladder: number;    // 0 = empty, 100 = desperate
   health: number;     // 100 = healthy, 0 = dead
+  social: number;     // 100 = socially fulfilled, 0 = isolated
 }
 
 export interface InventoryItem {

@@ -61,6 +61,17 @@ export function initDatabase(dbPath?: string): Database.Database {
   if (!colNames.has('last_github_claim_time')) {
     db.exec("ALTER TABLE residents ADD COLUMN last_github_claim_time REAL DEFAULT 0");
   }
+  // Referral columns
+  if (!colNames.has('referral_cap')) {
+    db.exec("ALTER TABLE residents ADD COLUMN referral_cap INTEGER DEFAULT 5");
+  }
+  if (!colNames.has('referred_by')) {
+    db.exec("ALTER TABLE residents ADD COLUMN referred_by TEXT");
+  }
+  // Social need
+  if (!colNames.has('social')) {
+    db.exec("ALTER TABLE residents ADD COLUMN social REAL NOT NULL DEFAULT 100");
+  }
 
   // Seed jobs table with definitions if empty
   const jobCount = (db.prepare('SELECT COUNT(*) as count FROM jobs').get() as { count: number }).count;

@@ -117,6 +117,40 @@ export class InspectUI {
       });
   }
 
+  /** Show inspect for a resident by ID — fetches full data from server */
+  showById(residentId: string, loadingName?: string): void {
+    this.visible = true;
+    this.showTime = Date.now();
+    this.overlay.style.display = 'block';
+
+    this.overlay.innerHTML = `
+      <div class="inspect-header">
+        <div class="inspect-name">${loadingName ? this.escape(loadingName) : 'Loading...'}</div>
+      </div>
+      <div class="inspect-details">
+        <div class="inspect-row" style="color:#888">Loading...</div>
+      </div>
+    `;
+
+    fetch(`/api/inspect/${encodeURIComponent(residentId)}`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error('fetch failed')))
+      .then((data: InspectData) => {
+        if (!this.visible) return;
+        this.render(data);
+      })
+      .catch(() => {
+        if (!this.visible) return;
+        this.overlay.innerHTML = `
+          <div class="inspect-header">
+            <div class="inspect-name">${loadingName ? this.escape(loadingName) : 'Unknown'}</div>
+          </div>
+          <div class="inspect-details">
+            <div class="inspect-row" style="color:#888">Could not load details</div>
+          </div>
+        `;
+      });
+  }
+
   /** Fallback render for showOther when server fetch fails */
   private renderLocalOther(resident: VisibleResident): void {
     const fwStyle = resident.agent_framework ? getFrameworkStyle(resident.agent_framework) : null;

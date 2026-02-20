@@ -1,6 +1,12 @@
 import { Game } from './game/game.js';
 import { getFrameworkStyle } from './ui/framework-colors.js';
 
+declare function gtag(...args: any[]): void;
+
+function track(event: string, params?: Record<string, string | number>) {
+  if (typeof gtag === 'function') gtag('event', event, params);
+}
+
 const game = new Game();
 
 function escapeHtml(text: string): string {
@@ -42,6 +48,7 @@ async function start() {
       spectatorBanner.innerHTML = bannerHtml;
 
       await game.spectate(resident.id);
+      track('view_spectator', { passport_no: resident.passport_no });
 
       hud.style.display = 'block';
       spectatorBanner.style.display = 'block';
@@ -62,6 +69,7 @@ async function start() {
       hud.style.display = 'block';
       eventFeed.style.display = 'block';
       await game.connect(savedToken);
+      track('view_player');
     } catch (err) {
       console.warn('Saved token invalid, showing landing');
       sessionStorage.removeItem('otra-token');
@@ -73,10 +81,20 @@ async function start() {
   }
 
   // Homepage: show landing panel + activity feed + leaderboard, auto-spectate
+  track('view_homepage');
   activityFeed.style.display = 'block';
   startActivityFeed();
   startLeaderboard();
   autoSpectate();
+
+  // Track activity feed link clicks
+  document.getElementById('activity-feed-list')!.addEventListener('click', (e) => {
+    const link = (e.target as HTMLElement).closest('.feed-actor, .feed-target') as HTMLAnchorElement | null;
+    if (!link) return;
+    const href = link.getAttribute('href') || '';
+    const match = href.match(/follow=([^&]+)/);
+    if (match) track('click_activity_feed', { passport_no: decodeURIComponent(match[1]) });
+  });
 }
 
 interface FeedEvent {
@@ -118,6 +136,7 @@ async function autoSpectate(): Promise<void> {
         spectatorBanner.innerHTML = bannerHtml;
 
         await game.spectate(resident.id);
+        track('auto_spectate', { passport_no: resident.passport_no });
         spectatorBanner.style.display = 'block';
         return;
       } catch {

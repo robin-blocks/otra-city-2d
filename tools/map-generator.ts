@@ -207,6 +207,19 @@ function generateMap(): MapData {
     interiorObstacles: guildInterior.interiorObstacles,
   });
 
+  // 9. Tourist Information
+  const touristInfo = { x: CX + 17, y: CY + 4, w: 7, h: 5, doorSide: 'south' as const, doorOffset: 3 };
+  const tiInterior = placeBuilding(ground, obstacles, touristInfo);
+  buildings.push({
+    id: 'tourist-info', name: 'Tourist Information', type: 'info',
+    tileX: touristInfo.x, tileY: touristInfo.y,
+    widthTiles: touristInfo.w, heightTiles: touristInfo.h,
+    doors: [{ tileX: touristInfo.x + 3, tileY: touristInfo.y + touristInfo.h - 1, facing: 'south' }],
+    interactionZones: [{ x: 2, y: 1, width: 2, height: 1, action: 'get_referral_link' }],
+    interiorGround: tiInterior.interiorGround,
+    interiorObstacles: tiInterior.interiorObstacles,
+  });
+
   // === GRAVEYARD ===
   fillRect(ground, CX + 48, CY + 50, 12, 10, TileType.GRAVEL);
   fillRect(obstacles, CX + 48, CY + 50, 12, 10, 0);

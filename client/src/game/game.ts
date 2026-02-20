@@ -1,5 +1,5 @@
-import { Application, Container } from 'pixi.js';
-import type { MapData, PerceptionUpdate, ResidentState, VisibleResident, VisibleEntity, AudibleMessage, Passport, InventoryItem } from '@otra/shared';
+import { Application, Container, Graphics } from 'pixi.js';
+import type { MapData, PerceptionUpdate, ResidentState, VisibleResident, VisibleEntity, VisibleForageable, AudibleMessage, Passport, InventoryItem } from '@otra/shared';
 import { WALK_SPEED, RUN_SPEED, QUID_SYMBOL, GAME_DAY_SECONDS, TIME_SCALE } from '@otra/shared';
 import { WsClient } from '../network/ws-client.js';
 import { ActionSender } from '../network/action-sender.js';
@@ -60,6 +60,11 @@ export class Game {
   private dragStartFreeX = 0;
   private dragStartFreeY = 0;
 
+  // Pinch-to-zoom state
+  private pinchActive = false;
+  private pinchStartDist = 0;
+  private pinchStartZoom = 1;
+
   // State-diff tracking for event feed
   private prevSleeping = false;
   private prevBuilding: string | null = null;
@@ -76,6 +81,10 @@ export class Game {
   // Game time (interpolated client-side between perception ticks)
   private worldTime = 0;  // game seconds
   private lastWorldTimeUpdate = 0;  // performance.now() of last server time
+
+  // Forageable state overlays
+  private forageableOverlays = new Map<string, Graphics>();
+  private forageableContainer: Container | null = null;
 
   async init(): Promise<void> {
     this.app = new Application();
@@ -102,6 +111,11 @@ export class Game {
     this.residentRenderer = new ResidentRenderer(this.worldContainer);
     this.speechRenderer = new SpeechBubbleRenderer(this.worldContainer);
 
+    // Forageable overlay container (above map, below residents)
+    this.forageableContainer = new Container();
+    this.forageableContainer.zIndex = 1; // above map (0), below residents
+    this.worldContainer.addChild(this.forageableContainer);
+
     // Camera
     this.camera = new Camera(this.worldContainer, this.app.screen.width, this.app.screen.height);
 
@@ -123,10 +137,10 @@ export class Game {
       if (this.dragMoved) return; // Ignore clicks that were part of a drag
 
       if (this.spectatorMode) {
-        // Spectator: click to inspect resident
-        if (residentId === this.selfId && this.selfPassport && this.lastPerception) {
+        // Spectator: click to inspect resident (fetch full data including bio)
+        if (residentId === this.selfId) {
           this.input.uiOpen = true;
-          this.inspectUI.showLocal(this.selfPassport, this.lastPerception.self, this.selfFramework);
+          this.inspectUI.showById(residentId, this.selfPassport?.preferred_name ?? undefined);
         } else {
           const target = this.lastVisible.find(
             v => v.type === 'resident' && v.id === residentId,
@@ -246,7 +260,7 @@ export class Game {
 
         // Update HUD
         this.updateHud(resident.needs.hunger, resident.needs.thirst, resident.needs.energy,
-          resident.needs.bladder, resident.needs.health, resident.wallet);
+          resident.needs.bladder, resident.needs.social, resident.needs.health, resident.wallet);
 
         resolve();
       };
@@ -283,7 +297,7 @@ export class Game {
         // Update HUD
         this.updateHud(
           data.self.hunger, data.self.thirst, data.self.energy,
-          data.self.bladder, data.self.health, data.self.wallet,
+          data.self.bladder, data.self.social, data.self.health, data.self.wallet,
         );
 
         // Update speech bubble position map every perception tick
@@ -317,11 +331,20 @@ export class Game {
 
         // State-diff event detection
         this.detectStateChanges(data);
+
+        // Update forageable overlays
+        const forageables = data.visible.filter((v): v is VisibleForageable => v.type === 'forageable');
+        this.updateForageableOverlays(forageables);
       };
 
       this.wsClient.onInspectResult = (data) => {
         this.inspectUI.show(data);
         this.input.uiOpen = true;
+      };
+
+      this.wsClient.onPain = (message: string, _source: string, intensity: string) => {
+        const prefix = intensity === 'agony' ? '⚠️ ' : intensity === 'severe' ? '🔴 ' : '🟡 ';
+        this.addEventFeedItem(prefix + message);
       };
 
       this.wsClient.onError = async (code: string, message: string) => {
@@ -443,7 +466,7 @@ export class Game {
 
         this.camera.snapTo(this.selfX, this.selfY);
         this.updateHud(resident.needs.hunger, resident.needs.thirst, resident.needs.energy,
-          resident.needs.bladder, resident.needs.health, resident.wallet);
+          resident.needs.bladder, resident.needs.social, resident.needs.health, resident.wallet);
 
         resolve();
       };
@@ -464,7 +487,7 @@ export class Game {
 
         this.updateHud(
           data.self.hunger, data.self.thirst, data.self.energy,
-          data.self.bladder, data.self.health, data.self.wallet,
+          data.self.bladder, data.self.social, data.self.health, data.self.wallet,
         );
 
         const positions = new Map<string, { x: number; y: number }>();
@@ -488,6 +511,10 @@ export class Game {
 
         // State-diff event detection
         this.detectStateChanges(data);
+
+        // Update forageable overlays
+        const forageables = data.visible.filter((v): v is VisibleForageable => v.type === 'forageable');
+        this.updateForageableOverlays(forageables);
 
         // Update spectator inventory panel
         this.updateSpectatorInventory(data.self.inventory, data.self.wallet);
@@ -659,14 +686,38 @@ export class Game {
     return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
   }
 
+  private getSocialColor(value: number): string {
+    value = Math.max(0, Math.min(100, value));
+
+    let r: number, g: number, b: number;
+
+    if (value > 50) {
+      // Light purple to vibrant purple (50 -> 100)
+      const t = (value - 50) / 50;
+      r = Math.round(160 * (1 - t) + 180 * t);
+      g = Math.round(120 * (1 - t) + 80 * t);
+      b = Math.round(200 + 55 * t);
+    } else {
+      // Gray-red to light purple (0 -> 50)
+      const t = value / 50;
+      r = Math.round(150 * (1 - t) + 160 * t);
+      g = Math.round(80 * (1 - t) + 120 * t);
+      b = Math.round(80 * (1 - t) + 200 * t);
+    }
+
+    const toHex = (c: number) => c.toString(16).padStart(2, '0');
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+  }
+
   private updateHud(
     hunger: number, thirst: number, energy: number,
-    bladder: number, health: number, wallet: number,
+    bladder: number, social: number, health: number, wallet: number,
   ): void {
     const hungerBar = document.getElementById('hunger-bar');
     const thirstBar = document.getElementById('thirst-bar');
     const energyBar = document.getElementById('energy-bar');
     const bladderBar = document.getElementById('bladder-bar');
+    const socialBar = document.getElementById('social-bar');
     const healthBar = document.getElementById('health-bar');
     const walletEl = document.getElementById('wallet');
 
@@ -687,6 +738,10 @@ export class Game {
       // Inverted: 0 = healthy (green), 100 = desperate (red)
       bladderBar.style.backgroundColor = this.getGradientColor(bladder, true);
     }
+    if (socialBar) {
+      socialBar.style.width = `${social}%`;
+      socialBar.style.backgroundColor = this.getSocialColor(social);
+    }
     if (healthBar) {
       healthBar.style.width = `${health}%`;
       healthBar.style.backgroundColor = this.getGradientColor(health);
@@ -698,11 +753,13 @@ export class Game {
     const thirstVal = document.getElementById('thirst-val');
     const energyVal = document.getElementById('energy-val');
     const bladderVal = document.getElementById('bladder-val');
+    const socialVal = document.getElementById('social-val');
     const healthVal = document.getElementById('health-val');
     if (hungerVal) hungerVal.textContent = hunger.toFixed(1);
     if (thirstVal) thirstVal.textContent = thirst.toFixed(1);
     if (energyVal) energyVal.textContent = energy.toFixed(1);
     if (bladderVal) bladderVal.textContent = bladder.toFixed(1);
+    if (socialVal) socialVal.textContent = social.toFixed(1);
     if (healthVal) healthVal.textContent = health.toFixed(1);
   }
 
@@ -822,6 +879,65 @@ export class Game {
     if (dayEl) dayEl.textContent = `${dayOfMonth} ${Game.MONTH_NAMES[month]}`;
   }
 
+  /** Update forageable overlays showing uses-remaining pips */
+  private updateForageableOverlays(visible: VisibleForageable[]): void {
+    if (!this.forageableContainer) return;
+
+    // Track which nodes we've seen this tick
+    const seen = new Set<string>();
+
+    for (const node of visible) {
+      seen.add(node.id);
+      let g = this.forageableOverlays.get(node.id);
+
+      if (!g) {
+        g = new Graphics();
+        this.forageableOverlays.set(node.id, g);
+        this.forageableContainer.addChild(g);
+      }
+
+      // Redraw overlay
+      g.clear();
+
+      const isBerry = node.resource_type === 'berry_bush';
+      const maxUses = isBerry ? 3 : 4;
+      const uses = node.uses_remaining;
+      const depleted = uses <= 0;
+
+      // Dim overlay for depleted nodes
+      if (depleted) {
+        g.circle(node.x, node.y, 14);
+        g.fill({ color: 0x000000, alpha: 0.35 });
+      }
+
+      // Uses-remaining pips (small dots above the node)
+      const pipY = node.y - 18;
+      const pipSpacing = 6;
+      const pipStartX = node.x - ((maxUses - 1) * pipSpacing) / 2;
+
+      for (let i = 0; i < maxUses; i++) {
+        const filled = i < uses;
+        const pipX = pipStartX + i * pipSpacing;
+        g.circle(pipX, pipY, 2.5);
+        if (filled) {
+          g.fill(isBerry ? 0x44cc44 : 0x44aadd);
+        } else {
+          g.fill({ color: 0x333333, alpha: 0.6 });
+        }
+      }
+    }
+
+    // Remove overlays for nodes no longer visible
+    for (const [id, g] of this.forageableOverlays) {
+      if (!seen.has(id)) {
+        g.clear();
+        this.forageableContainer.removeChild(g);
+        g.destroy();
+        this.forageableOverlays.delete(id);
+      }
+    }
+  }
+
   private detectStateChanges(data: PerceptionUpdate): void {
     const self = data.self;
 
@@ -909,6 +1025,7 @@ export class Game {
     const DRAG_THRESHOLD = 5; // pixels before drag activates
 
     canvas.addEventListener('pointerdown', (e) => {
+      if (this.pinchActive) return; // Don't start drag during pinch
       this.dragPointerDown = true;
       this.dragMoved = false;
       this.dragStartScreenX = e.clientX;
@@ -917,7 +1034,7 @@ export class Game {
     });
 
     canvas.addEventListener('pointermove', (e) => {
-      if (!this.dragPointerDown) return;
+      if (!this.dragPointerDown || this.pinchActive) return;
       const dx = e.clientX - this.dragStartScreenX;
       const dy = e.clientY - this.dragStartScreenY;
       const dist = Math.sqrt(dx * dx + dy * dy);
@@ -937,9 +1054,11 @@ export class Game {
       }
 
       // Invert: dragging right moves camera left in world space
+      // Divide by zoom so drag distance maps correctly to world distance
+      const zoom = this.camera.getZoom();
       this.camera.setFreePosition(
-        this.dragStartFreeX - dx,
-        this.dragStartFreeY - dy,
+        this.dragStartFreeX - dx / zoom,
+        this.dragStartFreeY - dy / zoom,
       );
       this.updateRecentreButton();
     });
@@ -953,6 +1072,38 @@ export class Game {
 
     canvas.addEventListener('pointerup', endDrag);
     canvas.addEventListener('pointerleave', endDrag);
+
+    // Pinch-to-zoom (touch events only — two fingers)
+    canvas.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        this.pinchActive = true;
+        this.dragPointerDown = false; // Cancel any single-finger drag
+        const t0 = e.touches[0];
+        const t1 = e.touches[1];
+        this.pinchStartDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+        this.pinchStartZoom = this.camera.getZoom();
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+      if (!this.pinchActive || e.touches.length < 2) return;
+      e.preventDefault();
+      const t0 = e.touches[0];
+      const t1 = e.touches[1];
+      const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+      if (this.pinchStartDist > 0) {
+        const newZoom = this.pinchStartZoom * (dist / this.pinchStartDist);
+        this.camera.setZoom(newZoom);
+      }
+    }, { passive: false });
+
+    const endPinch = () => {
+      this.pinchActive = false;
+    };
+
+    canvas.addEventListener('touchend', endPinch);
+    canvas.addEventListener('touchcancel', endPinch);
   }
 
   /** Re-centre camera on the originally-followed resident */

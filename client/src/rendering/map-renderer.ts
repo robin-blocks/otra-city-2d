@@ -89,30 +89,53 @@ export class MapRenderer {
           g.circle(x * ts + 16, y * ts + 12, 12);
           g.fill(0x226622);
         } else if (obs === TileType.BUSH_BERRY) {
-          // Berry bush: dark green bush with berry dots
-          g.circle(x * ts + 16, y * ts + 16, 10);
-          g.fill(0x2a6622);
-          // Berry dots
-          g.circle(x * ts + 12, y * ts + 12, 2);
-          g.fill(0xcc2244);
-          g.circle(x * ts + 20, y * ts + 14, 2);
-          g.fill(0xcc2244);
-          g.circle(x * ts + 15, y * ts + 20, 2);
-          g.fill(0xcc2244);
+          // Berry bush: bright green bush with contrast outline and red berries
+          const cx = x * ts + 16, cy = y * ts + 16;
+          // Dark outline for contrast against grass
+          g.circle(cx, cy, 14);
+          g.fill(0x1a4a12);
+          // Bright green bush body
+          g.circle(cx, cy, 12);
+          g.fill(0x33882a);
+          // Leaf highlight
+          g.circle(cx - 3, cy - 4, 6);
+          g.fill({ color: 0x44aa33, alpha: 0.5 });
+          // Red berry dots — larger and more numerous for visibility
+          g.circle(cx - 6, cy - 5, 3);
+          g.fill(0xdd2244);
+          g.circle(cx + 6, cy - 3, 3);
+          g.fill(0xdd2244);
+          g.circle(cx + 1, cy + 6, 3);
+          g.fill(0xdd2244);
+          g.circle(cx - 5, cy + 4, 2.5);
+          g.fill(0xcc3355);
+          g.circle(cx + 5, cy + 5, 2.5);
+          g.fill(0xcc3355);
         } else if (obs === TileType.BUSH_DEPLETED) {
-          // Depleted bush: brown/withered
-          g.circle(x * ts + 16, y * ts + 16, 9);
+          // Depleted bush: brown/withered with wilted shape
+          const cx = x * ts + 16, cy = y * ts + 16;
+          g.circle(cx, cy, 11);
+          g.fill(0x554422);
+          g.circle(cx, cy, 8);
           g.fill(0x665533);
         } else if (obs === TileType.SPRING) {
-          // Spring: blue puddle
-          g.ellipse(x * ts + 16, y * ts + 16, 11, 8);
-          g.fill(0x4488cc);
-          // Sparkle
-          g.circle(x * ts + 12, y * ts + 13, 2);
-          g.fill({ color: 0xaaddff, alpha: 0.7 });
+          // Spring: bright blue puddle with ripple ring and sparkles
+          const cx = x * ts + 16, cy = y * ts + 16;
+          // Outer ripple ring
+          g.ellipse(cx, cy, 14, 11);
+          g.fill({ color: 0x336699, alpha: 0.4 });
+          // Main water body
+          g.ellipse(cx, cy, 11, 8);
+          g.fill(0x4499dd);
+          // Sparkles
+          g.circle(cx - 4, cy - 3, 2.5);
+          g.fill({ color: 0xaaddff, alpha: 0.8 });
+          g.circle(cx + 3, cy + 2, 2);
+          g.fill({ color: 0xbbddff, alpha: 0.6 });
         } else if (obs === TileType.SPRING_DRY) {
-          // Dry spring: muddy patch
-          g.ellipse(x * ts + 16, y * ts + 16, 11, 8);
+          // Dry spring: muddy patch (matches larger spring size)
+          const cx = x * ts + 16, cy = y * ts + 16;
+          g.ellipse(cx, cy, 13, 10);
           g.fill(0x887766);
         } else if (obs === TileType.FENCE) {
           g.rect(x * ts, y * ts, ts, ts);
@@ -201,6 +224,36 @@ export class MapRenderer {
       });
 
       this.obstacleLayer.addChild(label);
+    }
+
+    // Add forageable node labels — small, subtle text below each node
+    const berryLabelStyle = new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 7,
+      fill: 0x88cc66,
+      align: 'center',
+      letterSpacing: 0.3,
+      dropShadow: { color: 0x000000, blur: 2, distance: 0, alpha: 0.9 },
+    });
+    const springLabelStyle = new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 7,
+      fill: 0x66bbdd,
+      align: 'center',
+      letterSpacing: 0.3,
+      dropShadow: { color: 0x000000, blur: 2, distance: 0, alpha: 0.9 },
+    });
+
+    for (const node of mapData.forageableNodes ?? []) {
+      const isBerry = node.type === 'berry_bush';
+      const nodeLabel = new Text({
+        text: isBerry ? 'BERRIES' : 'SPRING',
+        style: isBerry ? berryLabelStyle : springLabelStyle,
+      });
+      nodeLabel.anchor.set(0.5, 0);
+      nodeLabel.x = node.tileX * ts + ts / 2;
+      nodeLabel.y = node.tileY * ts + ts + 1; // just below the tile
+      this.obstacleLayer.addChild(nodeLabel);
     }
   }
 

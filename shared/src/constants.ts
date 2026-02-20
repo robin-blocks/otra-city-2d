@@ -29,7 +29,7 @@ export const WALL_SOUND_FACTOR = 0.5;         // range reduction through walls
 // Spec: hunger empties in ~16 hrs, thirst in ~8 hrs
 export const HUNGER_DECAY_PER_SEC = 100 / (16 * 3600);    // ~0.001736/sec
 export const THIRST_DECAY_PER_SEC = 100 / (8 * 3600);     // ~0.003472/sec
-export const ENERGY_PASSIVE_DECAY_PER_SEC = 2 / 3600;     // 2/hr passive drain
+export const ENERGY_PASSIVE_DECAY_PER_SEC = 5 / 3600;     // 5/hr passive drain (~5.6hr to empty)
 export const BLADDER_FILL_PER_SEC = 100 / (8 * 3600);     // fills in ~8 hrs passively
 
 // === Health ===
@@ -39,24 +39,28 @@ export const HEALTH_RECOVERY_PER_SEC = 2 / 3600; // 2/hr when all needs > 30
 export const HEALTH_RECOVERY_THRESHOLD = 30;  // all needs must be above this
 
 // === Energy costs ===
-export const ENERGY_COST_IDLE_PER_MIN = 0.1;
-export const ENERGY_COST_WALK_PER_TILE = 0.5; // per ~32px of movement
-export const ENERGY_COST_SPEAK = 0.2;
-export const ENERGY_COST_SHOUT = 0.5;
-export const ENERGY_COST_EAT = 0.5;
-export const ENERGY_COST_DRINK = 0.5;
-export const ENERGY_COST_USE_TOILET = 0.2;
-export const ENERGY_COST_WORK_TICK = 2.0;
+export const ENERGY_COST_IDLE_PER_MIN = 0.05;
+export const ENERGY_COST_WALK_PER_TILE = 0.02;  // per ~32px of movement (~38 min continuous walking)
+export const ENERGY_COST_RUN_PER_TILE = 0.06;   // 3× walk (~7 min continuous running)
+export const ENERGY_COST_SPEAK = 0.05;
+export const ENERGY_COST_SHOUT = 0.15;
+export const ENERGY_COST_EAT = 0.1;
+export const ENERGY_COST_DRINK = 0.1;
+export const ENERGY_COST_USE_TOILET = 0.05;
+export const ENERGY_COST_WORK_TICK = 3.0;       // work is now the main energy drain
 export const ENERGY_COST_WRITE_PETITION = 0;    // was 1.0 — free petitions (Phase 1)
 export const ENERGY_COST_VOTE = 0;              // was 0.3 — free voting (Phase 1)
-export const ENERGY_COST_INSPECT = 0.1;
-export const ENERGY_COST_TRADE = 0.3;
-export const ENERGY_COST_COLLECT_BODY = 3.0;
+export const ENERGY_COST_INSPECT = 0;           // free — informational
+export const ENERGY_COST_TRADE = 0.05;
+export const ENERGY_COST_COLLECT_BODY = 1.0;
 
 // === Sleep ===
-export const SLEEP_ROUGH_RATE_PER_SEC = 40 / 3600;    // +40 energy/real hr (0→100 in ~2.5 real hrs)
-export const SLEEP_BAG_RATE_PER_SEC = 60 / 3600;      // +60 energy/real hr (0→100 in ~1.7 real hrs)
-export const SLEEP_MAX_THRESHOLD = 90;                 // can't sleep above 90 energy
+export const SLEEP_ROUGH_RATE_PER_SEC = 400 / 3600;   // +400 energy/real hr (0→90 in ~12 sec)
+export const SLEEP_BAG_RATE_PER_SEC = 600 / 3600;     // +600 energy/real hr (0→90 in ~8 sec)
+export const SLEEP_MAX_THRESHOLD = 95;                 // can't sleep above 95 energy
+export const SLEEP_AUTO_WAKE_THRESHOLD = 90;           // auto-wake at 90 energy
+export const WAKE_COOLDOWN_MS = 10_000;                // min 10s of sleep before waking allowed
+export const WAKE_MIN_ENERGY = 20;                     // must have >= 20 energy to wake
 
 // === Economy ===
 export const UBI_AMOUNT = 0;                  // QUID per day — UBI discontinued, foraging replaces it
@@ -76,7 +80,7 @@ export const STARTING_HOUR = 6;               // world starts at 6:00 AM game ti
 
 // === Employment ===
 export const SHIFT_DURATION_GAME_HOURS = 8;   // game-hours per shift
-export const ENERGY_COST_WORK_PER_SEC = 2.0 / 3600; // 2 energy/game-hour while working
+export const ENERGY_COST_WORK_PER_SEC = 3.0 / 3600; // 3 energy/game-hour while working
 
 // === Petitions ===
 export const PETITION_COST_QUID = 0;          // was 5 — free petitions (Phase 1)
@@ -95,15 +99,15 @@ export const SOCIAL_DECAY_REDUCTION = 0.15;   // 15% slower hunger/thirst when n
 export const SOCIAL_CONVERSATION_RANGE = 150;              // px — range for conversation bonus
 export const SOCIAL_CONVERSATION_DECAY_REDUCTION = 0.30;   // 30% slower decay when conversing
 export const SOCIAL_CONVERSATION_WINDOW = 30;              // seconds — bonus persists this long after speech
-export const SOCIAL_CONVERSATION_ENERGY_RECOVERY = 0.5 / 3600;  // +0.5 energy/hr when conversing
+export const SOCIAL_CONVERSATION_ENERGY_RECOVERY = 2.0 / 3600;  // +2.0 energy/hr when conversing
 
 // === Giving ===
 export const GIVE_RANGE = 100;               // px — must be within 100px to give items
-export const ENERGY_COST_GIVE = 0.2;
+export const ENERGY_COST_GIVE = 0.05;
 
 // === Foraging ===
 export const FORAGE_RANGE = 48;                    // px — must be within 1.5 tiles
-export const ENERGY_COST_FORAGE = 0.5;
+export const ENERGY_COST_FORAGE = 0.1;
 export const BERRY_BUSH_MAX_USES = 3;
 export const BERRY_BUSH_REGROW_GAME_HOURS = 1.5;  // 30 real minutes
 export const SPRING_MAX_USES = 4;
@@ -114,7 +118,7 @@ export const LOITER_THRESHOLD_GAME_HOURS = 1;  // 1 game-hour of no movement = l
 export const LOITER_CHECK_DISTANCE = 16;       // px — movement less than this = "same place"
 export const ARREST_RANGE = 64;                // px — must be within 2 tiles to arrest
 export const ARREST_BOUNTY = 10;               // QUID per booking
-export const ENERGY_COST_ARREST = 2.0;
+export const ENERGY_COST_ARREST = 0.5;
 export const LOITER_SENTENCE_GAME_HOURS = 2;   // prison sentence for loitering
 
 // === GitHub Guild ===
@@ -124,6 +128,41 @@ export const GITHUB_PR_MEDIUM_REWARD = 40;                  // QUID for medium P
 export const GITHUB_PR_HARD_REWARD = 100;                   // QUID for hard PR
 export const GITHUB_CLAIM_COOLDOWN_SEC = 60;                // game-seconds between claims
 export const GITHUB_REPO = 'robin-blocks/otra-city-2d';
+
+// === Referrals ===
+export const REFERRAL_REWARD = 5;
+export const REFERRAL_DEFAULT_CAP = 5;
+export const REFERRAL_MATURITY_MS = 8 * 60 * 60 * 1000; // 8 real hours (1 game day) before referral is claimable
+
+// === Social need ===
+export const SOCIAL_DECAY_PER_SEC = 100 / (12 * 3600);       // empties in ~12 real hours
+export const SOCIAL_RECOVERY_PER_SEC = 100 / (1 * 3600);     // refills in ~1 hr of mutual conversation
+export const HEALTH_DRAIN_SOCIAL = 2 / 3600;                 // 2 health/hr when social = 0
+
+// === Pain signals ===
+export const PAIN_THRESHOLDS = {
+  hunger: { mild: 20, severe: 10, agony: 5 },
+  thirst: { mild: 20, severe: 10, agony: 5 },
+  social: { mild: 15, severe: 8, agony: 3 },
+  health: { mild: 40, severe: 25, agony: 10 },
+} as const;
+
+export const PAIN_COOLDOWNS = {
+  mild: 60_000,     // 60 seconds
+  severe: 30_000,   // 30 seconds
+  agony: 15_000,    // 15 seconds
+} as const;
+
+// === Webhook throttles ===
+export const NEEDS_WARNING_COOLDOWN_MS = 5 * 60 * 1000; // 5 min between warnings per need
+export const NEEDS_WARNING_THRESHOLD_HUNGER = 30;        // warn when hunger drops below 30
+export const NEEDS_WARNING_THRESHOLD_THIRST = 30;        // warn when thirst drops below 30
+export const NEEDS_WARNING_THRESHOLD_ENERGY = 30;        // warn when energy drops below 30
+export const NEEDS_WARNING_THRESHOLD_BLADDER = 75;       // warn when bladder rises above 75
+export const NEEDS_WARNING_THRESHOLD_SOCIAL = 30;        // warn when social drops below 30
+export const NEARBY_RESIDENT_COOLDOWN_MS = 10 * 60 * 1000; // 10 min between alerts per resident
+export const BUILDING_NEARBY_COOLDOWN_MS = 30 * 60 * 1000; // 30 min between alerts per building
+export const BUILDING_NEARBY_RANGE = 200;                // px — trigger building_nearby webhook
 
 // === Currency symbol ===
 export const QUID_SYMBOL = 'Ɋ';              // Ɋ (Latin capital Q with hook tail, U+024A)
