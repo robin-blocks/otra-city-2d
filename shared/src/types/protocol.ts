@@ -28,6 +28,7 @@ export interface PerceptionUpdate {
     law_breaking: string[];
     prison_sentence_remaining: number | null;  // game-seconds remaining, null if not imprisoned
     carrying_suspect_id: string | null;
+    awaiting_reply_from?: Array<{ id: string; name: string; seconds_remaining: number }>;
   };
   visible: VisibleEntity[];
   audible: AudibleMessage[];
@@ -131,6 +132,7 @@ export type ClientMessage =
   | { type: 'speak'; params: { text: string; volume: 'whisper' | 'normal' | 'shout'; to?: string }; request_id?: string }
   | { type: 'eat'; params: { item_id: string }; request_id?: string }
   | { type: 'drink'; params: { item_id: string }; request_id?: string }
+  | { type: 'consume'; params: { item_id: string }; request_id?: string }
   | { type: 'sleep'; request_id?: string }
   | { type: 'wake'; request_id?: string }
   | { type: 'use_toilet'; request_id?: string }

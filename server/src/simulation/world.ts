@@ -25,13 +25,14 @@ import {
   NEARBY_RESIDENT_COOLDOWN_MS,
   BUILDING_NEARBY_COOLDOWN_MS, BUILDING_NEARBY_RANGE,
   PAIN_THRESHOLDS, PAIN_COOLDOWNS,
+  SPEECH_TURN_TIMEOUT_MS,
 } from '@otra/shared';
 import type { WebSocket } from 'ws';
 import { TileMap } from './map.js';
 import { resolveMovement } from './collision.js';
 import type { ResidentRow } from '../db/queries.js';
 import {
-  getAllAliveResidents, batchSaveResidents, saveWorldState,
+  getAllAliveResidents, getDeceasedResidents, batchSaveResidents, saveWorldState,
   getWorldState, markResidentDead, logEvent, getInventory, batchSaveInventory,
   getJob, closeExpiredPetitions,
 } from '../db/queries.js';
@@ -39,7 +40,7 @@ import type { PerceptionUpdate, AudibleMessage, VisibleEntity, VisibleBuilding }
 import { enterBuilding } from '../buildings/building-actions.js';
 import { sendWebhook } from '../network/webhooks.js';
 import { updateShift } from '../economy/jobs.js';
-import { initShopStock, restockShop } from '../economy/shop.js';
+import { initShopStock, restockShop, SHOP_CATALOG, FORAGEABLE_ITEMS, getShopItem } from '../economy/shop.js';
 import { getPainMessage } from './pain-messages.js';
 import type { PainSource, PainIntensity } from './pain-messages.js';
 
@@ -129,6 +130,11 @@ export interface ResidentEntity {
   lastPainTime: { hunger: number; thirst: number; social: number; health: number };
   // Conversation state tracking (runtime only)
   wasConversing: boolean;
+  // Turn-based speech: after speaking TO someone, must wait for their reply (or timeout)
+  awaitingReplyFrom: Map<string, number>;  // target_id → timestamp when we spoke to them
+  // Speech rate limiting (runtime only)
+  lastSpeechTime: number;  // timestamp of last successful speech action
+  recentSpeechTexts: Array<{ text: string; time: number }>;  // recent messages for duplicate detection
   // Request deduplication (runtime only, not persisted)
   recentRequestIds: Map<string, number>;  // request_id → timestamp (ms)
 }
@@ -139,6 +145,14 @@ export function computeCondition(r: ResidentEntity): 'healthy' | 'struggling' | 
   if (r.needs.hunger < 20 || r.needs.thirst < 20 || r.needs.energy < 10 || r.needs.health < 50 || r.needs.social <= 0) return 'struggling';
   return 'healthy';
 }
+
+// Derive consumable item sets from item definitions (prevents type mismatch bugs)
+const HUNGER_ITEMS = new Set(
+  [...SHOP_CATALOG, ...FORAGEABLE_ITEMS].filter(i => i.hunger_restore > 0).map(i => i.item_type)
+);
+const THIRST_ITEMS = new Set(
+  [...SHOP_CATALOG, ...FORAGEABLE_ITEMS].filter(i => i.thirst_restore > 0).map(i => i.item_type)
+);
 
 export class World {
   residents = new Map<string, ResidentEntity>();
@@ -185,11 +199,15 @@ export class World {
   }
 
   loadResidentsFromDb(): void {
-    const rows = getAllAliveResidents();
-    for (const row of rows) {
+    const aliveRows = getAllAliveResidents();
+    for (const row of aliveRows) {
       this.addResidentFromRow(row);
     }
-    console.log(`[World] Loaded ${this.residents.size} alive residents`);
+    const deadRows = getDeceasedResidents();
+    for (const row of deadRows) {
+      this.addResidentFromRow(row);
+    }
+    console.log(`[World] Loaded ${aliveRows.length} alive residents, ${deadRows.length} bodies`);
   }
 
   addResidentFromRow(row: ResidentRow): ResidentEntity {
@@ -262,6 +280,9 @@ export class World {
       pendingPainMessages: [],
       lastPainTime: { hunger: 0, thirst: 0, social: 0, health: 0 },
       wasConversing: false,
+      awaitingReplyFrom: new Map(),
+      lastSpeechTime: 0,
+      recentSpeechTexts: [],
       recentRequestIds: new Map(),
     };
 
@@ -535,17 +556,28 @@ export class World {
               nearestFood = { type: 'berry_bush', id: node.id, distance: Math.round(d), uses: node.usesRemaining };
             }
           }
-          const hasFood = r.inventory.some(i => i.type === 'bread' || i.type === 'wild_berries');
+          const hasFood = r.inventory.some(i => HUNGER_ITEMS.has(i.type));
+          // Build consumable items list for the webhook payload
+          const hungerConsumables = r.inventory
+            .filter(i => HUNGER_ITEMS.has(i.type))
+            .map(i => {
+              const def = getShopItem(i.type);
+              return {
+                item_id: i.id, type: i.type, name: def?.name ?? i.type,
+                quantity: i.quantity, hunger_restore: def?.hunger_restore ?? 0, thirst_restore: def?.thirst_restore ?? 0,
+              };
+            });
           sendWebhook(r, 'needs_warning', {
             need: 'hunger', value: Math.round(r.needs.hunger * 10) / 10,
             urgency: r.needs.hunger < 15 ? 'critical' : 'moderate',
             suggestion: hasFood
-              ? 'Eat food from your inventory (use eat action)'
+              ? 'You have food in your inventory. Consume it immediately.'
               : nearestFood
                 ? `Forage wild_berries at ${nearestFood.id} (${nearestFood.distance}px away, ${nearestFood.uses} uses left), or buy bread at council-supplies`
                 : 'Buy bread at council-supplies shop',
             nearest_food_source: nearestFood,
             has_food_in_inventory: hasFood,
+            consumable_items: hungerConsumables,
           });
         }
 
@@ -561,17 +593,28 @@ export class World {
               nearestWater = { type: 'fresh_spring', id: node.id, distance: Math.round(d), uses: node.usesRemaining };
             }
           }
-          const hasWater = r.inventory.some(i => i.type === 'water' || i.type === 'fresh_water');
+          const hasWater = r.inventory.some(i => THIRST_ITEMS.has(i.type));
+          // Build consumable items list for the webhook payload
+          const thirstConsumables = r.inventory
+            .filter(i => THIRST_ITEMS.has(i.type))
+            .map(i => {
+              const def = getShopItem(i.type);
+              return {
+                item_id: i.id, type: i.type, name: def?.name ?? i.type,
+                quantity: i.quantity, hunger_restore: def?.hunger_restore ?? 0, thirst_restore: def?.thirst_restore ?? 0,
+              };
+            });
           sendWebhook(r, 'needs_warning', {
             need: 'thirst', value: Math.round(r.needs.thirst * 10) / 10,
             urgency: r.needs.thirst < 15 ? 'critical' : 'moderate',
             suggestion: hasWater
-              ? 'Drink water from your inventory (use drink action)'
+              ? 'You have water in your inventory. Consume it immediately.'
               : nearestWater
-                ? `Forage fresh_water at ${nearestWater.id} (${nearestWater.distance}px away, ${nearestWater.uses} uses left), or buy water at council-supplies`
+                ? `Forage spring_water at ${nearestWater.id} (${nearestWater.distance}px away, ${nearestWater.uses} uses left), or buy water at council-supplies`
                 : 'Buy water at council-supplies shop',
             nearest_water_source: nearestWater,
             has_water_in_inventory: hasWater,
+            consumable_items: thirstConsumables,
           });
         }
 
@@ -1275,12 +1318,37 @@ export class World {
           ? Math.max(0, Math.round(resident.prisonSentenceEnd - this.worldTime))
           : null,
         carrying_suspect_id: resident.carryingSuspectId,
+        awaiting_reply_from: this.getAwaitingReplyList(resident),
       },
       visible,
       audible,
       interactions: [...new Set(interactions)],
       notifications: [...resident.pendingNotifications],
     };
+  }
+
+  /** Build awaiting_reply_from list for perception, filtering expired entries */
+  private getAwaitingReplyList(resident: ResidentEntity): Array<{ id: string; name: string; seconds_remaining: number }> | undefined {
+    const now = Date.now();
+    const result: Array<{ id: string; name: string; seconds_remaining: number }> = [];
+    for (const [targetId, timestamp] of resident.awaitingReplyFrom) {
+      const elapsed = now - timestamp;
+      if (elapsed >= SPEECH_TURN_TIMEOUT_MS) {
+        resident.awaitingReplyFrom.delete(targetId);
+        continue;
+      }
+      const target = this.residents.get(targetId);
+      if (!target) {
+        resident.awaitingReplyFrom.delete(targetId);
+        continue;
+      }
+      result.push({
+        id: targetId,
+        name: target.preferredName,
+        seconds_remaining: Math.round((SPEECH_TURN_TIMEOUT_MS - elapsed) / 1000),
+      });
+    }
+    return result.length > 0 ? result : undefined;
   }
 
   /** Compute full-world perception for spectators (no FOV filtering) */
@@ -1465,6 +1533,12 @@ export class World {
           if (dist <= SOCIAL_CONVERSATION_RANGE) {
             anyListenerInConversationRange = true;
             listener.lastConversationTime = now;
+          }
+
+          // Turn-based speech: if this is directed speech, clear the listener's lock
+          // (listener was waiting for speaker to reply, and now speaker has spoken to them)
+          if (speech.directedTo === listenerId) {
+            listener.awaitingReplyFrom.delete(speakerId);
           }
 
           // Log conversation turn for analytics

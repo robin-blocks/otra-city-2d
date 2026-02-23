@@ -134,6 +134,10 @@ export function getAllAliveResidents(): ResidentRow[] {
   return getDb().prepare("SELECT * FROM residents WHERE status = 'ALIVE'").all() as ResidentRow[];
 }
 
+export function getDeceasedResidents(): ResidentRow[] {
+  return getDb().prepare("SELECT * FROM residents WHERE status = 'DECEASED'").all() as ResidentRow[];
+}
+
 export function saveResidentState(
   id: string,
   x: number, y: number, facing: number,

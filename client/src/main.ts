@@ -36,8 +36,12 @@ async function start() {
       if (!res.ok) throw new Error('Resident not found');
       const resident = await res.json();
 
-      // Build banner with optional framework badge
+      // Build banner with optional framework badge and death indicator
+      const isDeceased = resident.status === 'DECEASED';
       let bannerHtml = `Spectating: ${escapeHtml(resident.preferred_name)} (${escapeHtml(resident.passport_no)})`;
+      if (isDeceased) {
+        bannerHtml += ` <span style="background:#c33; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px; color: #fff;">DECEASED</span>`;
+      }
       if (resident.agent_framework) {
         const fwStyle = getFrameworkStyle(resident.agent_framework);
         if (fwStyle) {

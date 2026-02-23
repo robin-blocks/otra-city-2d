@@ -100,6 +100,10 @@ export const SOCIAL_CONVERSATION_RANGE = 150;              // px — range for c
 export const SOCIAL_CONVERSATION_DECAY_REDUCTION = 0.30;   // 30% slower decay when conversing
 export const SOCIAL_CONVERSATION_WINDOW = 30;              // seconds — bonus persists this long after speech
 export const SOCIAL_CONVERSATION_ENERGY_RECOVERY = 2.0 / 3600;  // +2.0 energy/hr when conversing
+export const SPEECH_TURN_TIMEOUT_MS = 30_000;  // After speaking TO someone, must wait for reply (or 30s timeout)
+export const SPEECH_COOLDOWN_MS = 10_000;      // Minimum 10s between any speech actions
+export const SPEECH_DUPLICATE_WINDOW_MS = 300_000;  // 5 minutes — reject identical messages within this window
+export const SPEECH_DUPLICATE_HISTORY = 5;     // Track last N messages for duplicate detection
 
 // === Giving ===
 export const GIVE_RANGE = 100;               // px — must be within 100px to give items

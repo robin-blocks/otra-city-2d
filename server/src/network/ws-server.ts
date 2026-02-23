@@ -4,7 +4,7 @@ import type { Server } from 'http';
 import { verifyToken } from '../auth/jwt.js';
 import { type World, type ResidentEntity, computeCondition } from '../simulation/world.js';
 import type { ClientMessage, ServerMessage } from '@otra/shared';
-import { WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR, ARREST_RANGE, ARREST_BOUNTY, ENERGY_COST_ARREST, LOITER_SENTENCE_GAME_HOURS, FORAGE_RANGE, ENERGY_COST_FORAGE, REFERRAL_MATURITY_MS, WAKE_COOLDOWN_MS, WAKE_MIN_ENERGY } from '@otra/shared';
+import { WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR, ARREST_RANGE, ARREST_BOUNTY, ENERGY_COST_ARREST, LOITER_SENTENCE_GAME_HOURS, FORAGE_RANGE, ENERGY_COST_FORAGE, REFERRAL_MATURITY_MS, WAKE_COOLDOWN_MS, WAKE_MIN_ENERGY, SPEECH_TURN_TIMEOUT_MS, SPEECH_COOLDOWN_MS, SPEECH_DUPLICATE_WINDOW_MS, SPEECH_DUPLICATE_HISTORY } from '@otra/shared';
 import {
   logEvent, getResident, getRecentEventsForResident,
   markResidentDeparted, markBodyProcessed, updateCarryingBody,
@@ -436,10 +436,50 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'invalid_text');
           return;
         }
+        // Global speech cooldown: minimum time between any speech actions
+        const now = Date.now();
+        const sinceLast = now - resident.lastSpeechTime;
+        if (sinceLast < SPEECH_COOLDOWN_MS) {
+          this.sendActionResult(resident, msg, false, 'speech_cooldown', {
+            wait_ms: SPEECH_COOLDOWN_MS - sinceLast,
+          });
+          return;
+        }
+        // Duplicate detection: reject identical messages within time window
+        const normalizedText = text.trim().toLowerCase();
+        // Prune old entries
+        resident.recentSpeechTexts = resident.recentSpeechTexts.filter(
+          s => now - s.time < SPEECH_DUPLICATE_WINDOW_MS
+        );
+        if (resident.recentSpeechTexts.some(s => s.text === normalizedText)) {
+          this.sendActionResult(resident, msg, false, 'duplicate_speech', {
+            window_seconds: Math.round(SPEECH_DUPLICATE_WINDOW_MS / 1000),
+          });
+          return;
+        }
         // Validate directed target exists if specified
         if (directedTo && !this.world.residents.has(directedTo)) {
           this.sendActionResult(resident, msg, false, 'target_not_found');
           return;
+        }
+        // Turn-based speech: can't speak to someone you're already waiting for a reply from
+        if (directedTo) {
+          const awaitingSince = resident.awaitingReplyFrom.get(directedTo);
+          if (awaitingSince !== undefined) {
+            const elapsed = Date.now() - awaitingSince;
+            if (elapsed < SPEECH_TURN_TIMEOUT_MS) {
+              const target = this.world.residents.get(directedTo);
+              this.sendActionResult(resident, msg, false, 'awaiting_reply', {
+                target_id: directedTo,
+                target_name: target?.preferredName ?? 'unknown',
+                wait_ms: SPEECH_TURN_TIMEOUT_MS - elapsed,
+              });
+              return;
+            } else {
+              // Expired — clear the lock
+              resident.awaitingReplyFrom.delete(directedTo);
+            }
+          }
         }
         const cost = volume === 'shout' ? ENERGY_COST_SHOUT : ENERGY_COST_SPEAK;
         if (resident.needs.energy < cost) {
@@ -447,8 +487,18 @@ export class WsServer {
           return;
         }
         resident.needs.energy -= cost;
-        resident.pendingSpeech.push({ text, volume, time: Date.now(), directedTo });
+        resident.pendingSpeech.push({ text, volume, time: now, directedTo });
         logEvent('speak', resident.id, directedTo, null, resident.x, resident.y, { text, volume, to: directedTo });
+        // Record for rate limiting and duplicate detection
+        resident.lastSpeechTime = now;
+        resident.recentSpeechTexts.push({ text: normalizedText, time: now });
+        if (resident.recentSpeechTexts.length > SPEECH_DUPLICATE_HISTORY) {
+          resident.recentSpeechTexts.shift();
+        }
+        // Set turn lock: must wait for their reply before speaking to them again
+        if (directedTo) {
+          resident.awaitingReplyFrom.set(directedTo, now);
+        }
         this.sendActionResult(resident, msg, true);
         break;
       }
@@ -624,6 +674,23 @@ export class WsServer {
         }
         this.sendActionResult(resident, msg, drinkResult.success, drinkResult.message,
           drinkResult.success ? { effects: drinkResult.effects, inventory: resident.inventory } : undefined);
+        break;
+      }
+
+      case 'consume': {
+        const consumeItemId = msg.params?.item_id;
+        if (!consumeItemId) {
+          this.sendActionResult(resident, msg, false, 'missing_item_id');
+          return;
+        }
+        const consumeResult = consumeItem(resident, consumeItemId, 'eat');
+        if (consumeResult.success) {
+          logEvent('consume', resident.id, null, null, resident.x, resident.y, {
+            item_id: consumeItemId, effects: consumeResult.effects,
+          });
+        }
+        this.sendActionResult(resident, msg, consumeResult.success, consumeResult.message,
+          consumeResult.success ? { effects: consumeResult.effects, inventory: resident.inventory } : undefined);
         break;
       }
 
@@ -1587,7 +1654,7 @@ export class WsServer {
     for (const [id, spectatorSet] of this.spectators) {
       if (this.connections.has(id)) continue; // already handled above
       const resident = this.world.residents.get(id);
-      if (!resident || resident.isDead) continue;
+      if (!resident) continue;
 
       const spectatorPerception = this.world.computeSpectatorPerception(resident, tick);
       const spectatorMsg: ServerMessage = { type: 'perception', data: spectatorPerception };
