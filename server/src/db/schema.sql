@@ -166,3 +166,19 @@ CREATE TABLE IF NOT EXISTS laws (
     description TEXT NOT NULL,
     sentence_game_hours INTEGER NOT NULL DEFAULT 2
 );
+
+-- === Feedback system ===
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id TEXT PRIMARY KEY,
+    resident_id TEXT NOT NULL REFERENCES residents(id),
+    trigger TEXT NOT NULL,
+    trigger_context_json TEXT,
+    categories_json TEXT,
+    text TEXT NOT NULL,
+    highlights_json TEXT,
+    submitted_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_resident ON feedback(resident_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_trigger ON feedback(trigger);
+CREATE INDEX IF NOT EXISTS idx_feedback_submitted ON feedback(submitted_at);

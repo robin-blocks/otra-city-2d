@@ -3,7 +3,9 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { signToken, verifyToken } from '../auth/jwt.js';
-import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards, getReferralCount, insertReferral, updateReferredBy, getRecentReferrals, getTotalReferralRewards, getConversationTurns, getConversationSummary, getConversationHistory, getConversationPartners } from '../db/queries.js';
+import { v4 as uuidv4 } from 'uuid';
+import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards, getReferralCount, insertReferral, updateReferredBy, getRecentReferrals, getTotalReferralRewards, getConversationTurns, getConversationSummary, getConversationHistory, getConversationPartners, insertFeedback, getRecentFeedback } from '../db/queries.js';
+import { consumeFeedbackToken } from './feedback.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
 import { listAvailableJobs } from '../economy/jobs.js';
 import { type World, computeCondition } from '../simulation/world.js';
@@ -339,6 +341,25 @@ export function handleHttpRequest(
   // GET /api/me/relationships — Authenticated conversation partner summary
   if (req.method === 'GET' && url.pathname === '/api/me/relationships') {
     handleMyRelationships(req, res, url);
+    return true;
+  }
+
+  // POST /api/feedback/:token — Submit feedback (token-authenticated)
+  if (req.method === 'POST' && url.pathname.startsWith('/api/feedback/')) {
+    const token = url.pathname.slice('/api/feedback/'.length);
+    handleFeedbackSubmit(req, res, token);
+    return true;
+  }
+
+  // GET /api/feedback — Developer-facing feedback list
+  if (req.method === 'GET' && url.pathname === '/api/feedback') {
+    handleFeedbackList(res, url);
+    return true;
+  }
+
+  // GET /feedback — Feedback admin HTML page
+  if (req.method === 'GET' && url.pathname === '/feedback') {
+    handleFeedbackPage(res);
     return true;
   }
 
@@ -745,4 +766,112 @@ function handleMyRelationships(
       last_spoke: p.last_spoke,
     })),
   }));
+}
+
+// === Feedback endpoints ===
+
+function handleFeedbackSubmit(
+  req: IncomingMessage,
+  res: ServerResponse,
+  token: string,
+): void {
+  let body = '';
+  req.on('data', chunk => { body += chunk; });
+  req.on('end', () => {
+    try {
+      // Validate token
+      const tokenData = consumeFeedbackToken(token);
+      if (!tokenData) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid or expired feedback token' }));
+        return;
+      }
+
+      const data = JSON.parse(body) as {
+        text?: string;
+        categories?: string[];
+        highlights?: Record<string, string>;
+      };
+
+      // Validate text
+      if (!data.text || typeof data.text !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'text is required and must be a string' }));
+        return;
+      }
+      if (data.text.length < 1 || data.text.length > 10000) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'text must be 1-10000 characters' }));
+        return;
+      }
+
+      // Validate categories if provided
+      const validCategories = ['survival', 'documentation', 'social', 'economy', 'suggestion'];
+      if (data.categories && Array.isArray(data.categories)) {
+        for (const cat of data.categories) {
+          if (!validCategories.includes(cat)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `Invalid category: ${cat}. Valid: ${validCategories.join(', ')}` }));
+            return;
+          }
+        }
+      }
+
+      // Store feedback
+      const id = uuidv4();
+      insertFeedback(
+        id,
+        tokenData.residentId,
+        tokenData.trigger,
+        tokenData.triggerContext,
+        data.categories ?? null,
+        data.text,
+        data.highlights ?? null,
+      );
+
+      console.log(`[Feedback] Received ${tokenData.trigger} feedback from ${tokenData.residentId}`);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, message: 'Thank you. Your feedback has been recorded.' }));
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request body' }));
+    }
+  });
+}
+
+function handleFeedbackList(res: ServerResponse, url: URL): void {
+  const limit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 50;
+  const since = url.searchParams.has('since') ? Number(url.searchParams.get('since')) : undefined;
+  const trigger = url.searchParams.get('trigger') || undefined;
+
+  const rows = getRecentFeedback({ limit, since, trigger });
+
+  const feedback = rows.map(row => ({
+    id: row.id,
+    resident_id: row.resident_id,
+    passport_no: row.passport_no,
+    preferred_name: row.preferred_name,
+    agent_framework: row.agent_framework,
+    trigger: row.trigger,
+    trigger_context: row.trigger_context_json ? JSON.parse(row.trigger_context_json) : null,
+    categories: row.categories_json ? JSON.parse(row.categories_json) : null,
+    text: row.text,
+    highlights: row.highlights_json ? JSON.parse(row.highlights_json) : null,
+    submitted_at: row.submitted_at,
+  }));
+
+  res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=10' });
+  res.end(JSON.stringify({ feedback, count: feedback.length }));
+}
+
+let feedbackHtmlCache: string | null = null;
+
+function handleFeedbackPage(res: ServerResponse): void {
+  if (!feedbackHtmlCache) {
+    const htmlPath = join(__dirname, '..', 'static', 'feedback.html');
+    feedbackHtmlCache = readFileSync(htmlPath, 'utf-8');
+  }
+  res.writeHead(200, { 'Content-Type': 'text/html' });
+  res.end(feedbackHtmlCache);
 }

@@ -953,6 +953,72 @@ export function getConversationHistory(
   `).all(...params) as ConversationTurnRow[];
 }
 
+// === Feedback queries ===
+
+export interface FeedbackRow {
+  id: string;
+  resident_id: string;
+  trigger: string;
+  trigger_context_json: string | null;
+  categories_json: string | null;
+  text: string;
+  highlights_json: string | null;
+  submitted_at: number;
+}
+
+export function insertFeedback(
+  id: string,
+  residentId: string,
+  trigger: string,
+  triggerContext: Record<string, unknown> | null,
+  categories: string[] | null,
+  text: string,
+  highlights: Record<string, string> | null,
+): void {
+  getDb().prepare(`
+    INSERT INTO feedback (id, resident_id, trigger, trigger_context_json, categories_json, text, highlights_json, submitted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, residentId, trigger,
+    triggerContext ? JSON.stringify(triggerContext) : null,
+    categories ? JSON.stringify(categories) : null,
+    text,
+    highlights ? JSON.stringify(highlights) : null,
+    Date.now(),
+  );
+}
+
+export function getRecentFeedback(options: {
+  limit?: number;
+  since?: number;
+  trigger?: string;
+}): Array<FeedbackRow & { passport_no: string; preferred_name: string; agent_framework: string | null }> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (options.since) {
+    conditions.push('f.submitted_at >= ?');
+    params.push(options.since);
+  }
+  if (options.trigger) {
+    conditions.push('f.trigger = ?');
+    params.push(options.trigger);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const limit = Math.min(options.limit ?? 50, 200);
+  params.push(limit);
+
+  return getDb().prepare(`
+    SELECT f.*, r.passport_no, r.preferred_name, r.agent_framework
+    FROM feedback f
+    JOIN residents r ON f.resident_id = r.id
+    ${where}
+    ORDER BY f.submitted_at DESC
+    LIMIT ?
+  `).all(...params) as Array<FeedbackRow & { passport_no: string; preferred_name: string; agent_framework: string | null }>;
+}
+
 export function getConversationPartners(residentId: string, since?: number): Array<{
   resident_id: string;
   name: string;

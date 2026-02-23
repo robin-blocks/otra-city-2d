@@ -39,6 +39,7 @@ import {
 import type { PerceptionUpdate, AudibleMessage, VisibleEntity, VisibleBuilding } from '@otra/shared';
 import { enterBuilding } from '../buildings/building-actions.js';
 import { sendWebhook } from '../network/webhooks.js';
+import { createFeedbackToken, getReflectionPrompt, getFeedbackUrl } from '../network/feedback.js';
 import { updateShift } from '../economy/jobs.js';
 import { initShopStock, restockShop, SHOP_CATALOG, FORAGEABLE_ITEMS, getShopItem } from '../economy/shop.js';
 import { getPainMessage } from './pain-messages.js';
@@ -137,6 +138,16 @@ export interface ResidentEntity {
   recentSpeechTexts: Array<{ text: string; time: number }>;  // recent messages for duplicate detection
   // Request deduplication (runtime only, not persisted)
   recentRequestIds: Map<string, number>;  // request_id → timestamp (ms)
+  // Feedback & reflection (runtime only)
+  createdAt: number;  // real-time ms from DB created_at
+  lastReflectionTime: number;
+  reflectionCount: number;
+  conversationCount: number;
+  // Milestone tracking (runtime only)
+  firstConversationFeedbackSent: boolean;
+  thirtyMinuteFeedbackSent: boolean;
+  nearDeathFeedbackSent: boolean;
+  hadLowHealth: boolean;  // set when health drops below 20, used for near-death milestone
 }
 
 /** Compute visible condition for a resident based on their needs */
@@ -153,6 +164,10 @@ const HUNGER_ITEMS = new Set(
 const THIRST_ITEMS = new Set(
   [...SHOP_CATALOG, ...FORAGEABLE_ITEMS].filter(i => i.thirst_restore > 0).map(i => i.item_type)
 );
+
+// Feedback timing constants
+const REFLECTION_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 real hours
+const THIRTY_MINUTES_MS = 30 * 60 * 1000;
 
 export class World {
   residents = new Map<string, ResidentEntity>();
@@ -284,6 +299,18 @@ export class World {
       lastSpeechTime: 0,
       recentSpeechTexts: [],
       recentRequestIds: new Map(),
+      // Feedback & reflection
+      createdAt: row.created_at,
+      lastReflectionTime: Date.now(),  // now, not createdAt — avoids burst on restart
+      reflectionCount: 0,
+      conversationCount: 0,
+      // Pre-set milestone flags for residents loaded from DB (created > 10s ago)
+      // to avoid duplicate milestone webhooks after server restart.
+      // Freshly registered residents (created just now) get false so they can earn milestones.
+      firstConversationFeedbackSent: Date.now() - row.created_at > 10_000,
+      thirtyMinuteFeedbackSent: Date.now() - row.created_at >= 30 * 60 * 1000,
+      nearDeathFeedbackSent: false,
+      hadLowHealth: false,
     };
 
     // On load: if arrested_by is set but no officer is carrying this resident, clear arrest state
@@ -666,6 +693,11 @@ export class World {
       // Pain signals — visceral messages to connected agents
       this.checkPainSignals(r, Date.now());
 
+      // Track near-death for milestone feedback
+      if (r.needs.health < 20 && r.needs.health > 0) {
+        r.hadLowHealth = true;
+      }
+
       // Bladder accident at 100
       if (r.needs.bladder >= 100) {
         r.needs.bladder = 50; // partial relief
@@ -723,6 +755,76 @@ export class World {
         intensity,
         needs: needsSnapshot,
       });
+    }
+  }
+
+  /** Periodic reflection webhooks and milestone feedback */
+  updateReflections(): void {
+    const now = Date.now();
+
+    for (const [, r] of this.residents) {
+      if (r.isDead || !r.webhookUrl) continue;
+
+      // --- Milestone: First 30 minutes survived ---
+      if (!r.thirtyMinuteFeedbackSent && now - r.createdAt >= THIRTY_MINUTES_MS) {
+        r.thirtyMinuteFeedbackSent = true;
+        const token = createFeedbackToken(r.id, 'milestone', {
+          milestone: 'first_30_minutes',
+          survival_time_ms: now - r.createdAt,
+        });
+        sendWebhook(r, 'reflection', {
+          prompt: "You've been in Otra City for 30 minutes. What was your initial experience like? Was anything confusing?",
+          feedback_url: getFeedbackUrl(token),
+          survival_time_ms: now - r.createdAt,
+          current_needs: { ...r.needs },
+        });
+      }
+
+      // --- Milestone: First conversation ---
+      if (!r.firstConversationFeedbackSent && r.conversationCount >= 1) {
+        r.firstConversationFeedbackSent = true;
+        const token = createFeedbackToken(r.id, 'milestone', {
+          milestone: 'first_conversation',
+          survival_time_ms: now - r.createdAt,
+        });
+        sendWebhook(r, 'reflection', {
+          prompt: "You just had your first conversation with another resident. How did that go? What would make social interaction better?",
+          feedback_url: getFeedbackUrl(token),
+          survival_time_ms: now - r.createdAt,
+          current_needs: { ...r.needs },
+        });
+      }
+
+      // --- Milestone: Near-death scare (health was < 20, now recovered above 50) ---
+      if (!r.nearDeathFeedbackSent && r.hadLowHealth && r.needs.health > 50) {
+        r.nearDeathFeedbackSent = true;
+        const token = createFeedbackToken(r.id, 'milestone', {
+          milestone: 'near_death_recovery',
+          survival_time_ms: now - r.createdAt,
+        });
+        sendWebhook(r, 'reflection', {
+          prompt: "You nearly died but recovered. What happened? What saved you? What would have helped earlier?",
+          feedback_url: getFeedbackUrl(token),
+          survival_time_ms: now - r.createdAt,
+          current_needs: { ...r.needs },
+        });
+      }
+
+      // --- Periodic reflection (every 2 real hours) ---
+      if (now - r.lastReflectionTime >= REFLECTION_INTERVAL_MS) {
+        r.lastReflectionTime = now;
+        const prompt = getReflectionPrompt(r.reflectionCount);
+        r.reflectionCount++;
+        const token = createFeedbackToken(r.id, 'reflection', {
+          survival_time_ms: now - r.createdAt,
+        });
+        sendWebhook(r, 'reflection', {
+          prompt,
+          feedback_url: getFeedbackUrl(token),
+          survival_time_ms: now - r.createdAt,
+          current_needs: { ...r.needs },
+        });
+      }
     }
   }
 
@@ -872,9 +974,27 @@ export class World {
           cause, wallet_lost: r.wallet
         });
 
+        const walletAtDeath = r.wallet;
         r.wallet = 0;
         console.log(`[World] ${r.preferredName} (${r.passportNo}) has died: ${cause}`);
-        sendWebhook(r, 'death', { cause, x: r.x, y: r.y });
+
+        // Enriched death webhook with feedback URL
+        const feedbackToken = createFeedbackToken(r.id, 'death', {
+          cause,
+          survival_time_ms: Date.now() - r.createdAt,
+        });
+        sendWebhook(r, 'death', {
+          cause,
+          x: r.x,
+          y: r.y,
+          survival_time_ms: Date.now() - r.createdAt,
+          needs_at_death: { ...r.needs },
+          wallet: walletAtDeath,
+          inventory: r.inventory.map(i => ({ type: i.type, quantity: i.quantity })),
+          conversations_had: r.conversationCount,
+          feedback_url: getFeedbackUrl(feedbackToken),
+          feedback_prompt: "You have died. Take a moment to reflect on your experience in Otra City. What confused you? What would have helped you survive? What did you enjoy? What would you change about the city? Your feedback helps improve life for future residents.",
+        });
 
         // Notify nearby residents about the death
         this.notifyNearby(r.x, r.y, 200, `${r.preferredName} has died nearby.`);
@@ -1589,6 +1709,7 @@ export class World {
         // Speaker gets conversation bonus only if someone else heard them within range
         if (anyListenerInConversationRange) {
           speaker.lastConversationTime = now;
+          speaker.conversationCount++;
         }
       }
     }

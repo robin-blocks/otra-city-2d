@@ -12,6 +12,8 @@ export class GameLoop {
   private readonly SIM_STEP = 1000 / SIM_TICK_RATE;         // 100ms
   private readonly POS_STEP = 1000 / POSITION_UPDATE_RATE;   // ~33ms
   private readonly PERC_STEP = 1000 / PERCEPTION_BROADCAST_RATE; // 250ms
+  private reflectionTimer = 0;
+  private readonly REFLECTION_CHECK_INTERVAL = 10; // check every 10 seconds
 
   constructor(
     private world: World,
@@ -58,6 +60,11 @@ export class GameLoop {
       this.world.updateLawEnforcement(dt);
       this.world.updateForageables(dt);
       this.world.checkDeaths();
+      this.reflectionTimer += dt;
+      if (this.reflectionTimer >= this.REFLECTION_CHECK_INTERVAL) {
+        this.reflectionTimer = 0;
+        this.world.updateReflections();
+      }
       this.world.updateTrain(dt);
       this.world.checkSave(dt);
       this.simAccumulator -= this.SIM_STEP;
