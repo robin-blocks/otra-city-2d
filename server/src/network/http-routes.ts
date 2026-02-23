@@ -4,7 +4,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { signToken, verifyToken } from '../auth/jwt.js';
 import { v4 as uuidv4 } from 'uuid';
-import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards, getReferralCount, insertReferral, updateReferredBy, getRecentReferrals, getTotalReferralRewards, getConversationTurns, getConversationSummary, getConversationHistory, getConversationPartners, insertFeedback, getRecentFeedback, getReputationStats } from '../db/queries.js';
+import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, updateResidentWebhookUrl, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards, getReferralCount, insertReferral, updateReferredBy, getRecentReferrals, getTotalReferralRewards, getConversationTurns, getConversationSummary, getConversationHistory, getConversationPartners, insertFeedback, getRecentFeedback, getReputationStats } from '../db/queries.js';
 import { consumeFeedbackToken } from './feedback.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
 import { listAvailableJobs } from '../economy/jobs.js';
@@ -663,32 +663,53 @@ function handleProfileUpdate(
   req.on('data', chunk => { body += chunk; });
   req.on('end', () => {
     try {
-      const data = JSON.parse(body) as { bio?: string };
+      const data = JSON.parse(body) as { bio?: string; webhook_url?: string | null };
+      const updates: Record<string, unknown> = {};
 
-      if (typeof data.bio !== 'string') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'bio must be a string' }));
-        return;
+      if (data.bio !== undefined) {
+        if (typeof data.bio !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'bio must be a string' }));
+          return;
+        }
+        if (data.bio.length > 200) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'bio must be at most 200 characters' }));
+          return;
+        }
+        updateResidentBio(payload.residentId, data.bio);
+        const entity = world.residents.get(payload.residentId);
+        if (entity) entity.bio = data.bio;
+        updates.bio = data.bio;
       }
-      if (data.bio.length > 200) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'bio must be at most 200 characters' }));
-        return;
+
+      if (data.webhook_url !== undefined) {
+        if (data.webhook_url !== null && typeof data.webhook_url !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'webhook_url must be a string or null' }));
+          return;
+        }
+        if (data.webhook_url !== null && data.webhook_url.length > 500) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'webhook_url must be at most 500 characters' }));
+          return;
+        }
+        updateResidentWebhookUrl(payload.residentId, data.webhook_url);
+        const entity = world.residents.get(payload.residentId);
+        if (entity) entity.webhookUrl = data.webhook_url;
+        updates.webhook_url = data.webhook_url;
       }
 
-      // Update DB
-      updateResidentBio(payload.residentId, data.bio);
-
-      // Update in-memory entity
-      const entity = world.residents.get(payload.residentId);
-      if (entity) {
-        entity.bio = data.bio;
+      if (Object.keys(updates).length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No valid fields to update. Supported: bio, webhook_url' }));
+        return;
       }
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, bio: data.bio }));
+      res.end(JSON.stringify({ ok: true, ...updates }));
 
-      console.log(`[HTTP] ${payload.passportNo} updated bio`);
+      console.log(`[HTTP] ${payload.passportNo} updated profile: ${Object.keys(updates).join(', ')}`);
     } catch {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid request body' }));

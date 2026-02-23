@@ -184,6 +184,10 @@ export function updateResidentBio(id: string, bio: string): void {
   getDb().prepare('UPDATE residents SET bio = ? WHERE id = ?').run(bio, id);
 }
 
+export function updateResidentWebhookUrl(id: string, webhookUrl: string | null): void {
+  getDb().prepare('UPDATE residents SET webhook_url = ? WHERE id = ?').run(webhookUrl, id);
+}
+
 export function logEvent(
   type: string,
   residentId: string | null,
