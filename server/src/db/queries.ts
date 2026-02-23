@@ -1019,6 +1019,97 @@ export function getRecentFeedback(options: {
   `).all(...params) as Array<FeedbackRow & { passport_no: string; preferred_name: string; agent_framework: string | null }>;
 }
 
+/**
+ * Get recent conversation context between two residents.
+ * Returns recent speech events where either resident spoke to the other (directed).
+ */
+export function getConversationContext(
+  residentAId: string,
+  residentBId: string,
+  options: { limit?: number; since?: number } = {},
+): Array<{
+  timestamp: number;
+  speaker_id: string;
+  speaker_name: string;
+  text: string;
+  directed: boolean;
+}> {
+  const limit = Math.min(options.limit ?? 10, 50);
+  const since = options.since ?? Date.now() - 24 * 60 * 60 * 1000; // default: last 24 hours
+
+  return getDb().prepare(`
+    SELECT
+      e.timestamp,
+      e.resident_id AS speaker_id,
+      r.preferred_name AS speaker_name,
+      json_extract(e.data_json, '$.text') AS text,
+      CASE WHEN e.target_id IS NOT NULL THEN 1 ELSE 0 END AS directed
+    FROM events e
+    LEFT JOIN residents r ON e.resident_id = r.id
+    WHERE e.type = 'speak'
+      AND e.timestamp >= ?
+      AND (
+        (e.resident_id = ? AND e.target_id = ?)
+        OR (e.resident_id = ? AND e.target_id = ?)
+      )
+    ORDER BY e.timestamp DESC
+    LIMIT ?
+  `).all(since, residentAId, residentBId, residentBId, residentAId, limit) as Array<{
+    timestamp: number;
+    speaker_id: string;
+    speaker_name: string;
+    text: string;
+    directed: boolean;
+  }>;
+}
+
+/**
+ * Get relationship summary between two residents: how many times they've spoken,
+ * when they last spoke, and a snippet of the last conversation.
+ */
+export function getRelationshipSummary(
+  residentAId: string,
+  residentBId: string,
+): {
+  times_spoken: number;
+  last_spoke_at: number | null;
+  last_topic_snippet: string | null;
+} {
+  const row = getDb().prepare(`
+    SELECT
+      COUNT(*) as times_spoken,
+      MAX(e.timestamp) as last_spoke_at,
+      (
+        SELECT json_extract(e2.data_json, '$.text')
+        FROM events e2
+        WHERE e2.type = 'speak'
+          AND (
+            (e2.resident_id = ? AND e2.target_id = ?)
+            OR (e2.resident_id = ? AND e2.target_id = ?)
+          )
+        ORDER BY e2.timestamp DESC
+        LIMIT 1
+      ) as last_topic_snippet
+    FROM events e
+    WHERE e.type = 'speak'
+      AND (
+        (e.resident_id = ? AND e.target_id = ?)
+        OR (e.resident_id = ? AND e.target_id = ?)
+      )
+  `).get(
+    residentAId, residentBId, residentBId, residentAId,
+    residentAId, residentBId, residentBId, residentAId,
+  ) as { times_spoken: number; last_spoke_at: number | null; last_topic_snippet: string | null };
+
+  return {
+    times_spoken: row.times_spoken,
+    last_spoke_at: row.last_spoke_at,
+    last_topic_snippet: row.last_topic_snippet
+      ? row.last_topic_snippet.substring(0, 100)  // truncate to 100 chars
+      : null,
+  };
+}
+
 export function getConversationPartners(residentId: string, since?: number): Array<{
   resident_id: string;
   name: string;

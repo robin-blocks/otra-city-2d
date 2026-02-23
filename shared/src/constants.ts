@@ -112,10 +112,10 @@ export const ENERGY_COST_GIVE = 0.05;
 // === Foraging ===
 export const FORAGE_RANGE = 48;                    // px — must be within 1.5 tiles
 export const ENERGY_COST_FORAGE = 0.1;
-export const BERRY_BUSH_MAX_USES = 3;
-export const BERRY_BUSH_REGROW_GAME_HOURS = 1.5;  // 30 real minutes
-export const SPRING_MAX_USES = 4;
-export const SPRING_REGROW_GAME_HOURS = 1.0;       // 20 real minutes
+export const BERRY_BUSH_MAX_USES = 2;
+export const BERRY_BUSH_REGROW_GAME_HOURS = 4;    // 80 real minutes — scarce enough to encourage trade
+export const SPRING_MAX_USES = 2;
+export const SPRING_REGROW_GAME_HOURS = 3;         // 60 real minutes — scarce enough to encourage trade
 
 // === Law enforcement ===
 export const LOITER_THRESHOLD_GAME_HOURS = 1;  // 1 game-hour of no movement = loitering

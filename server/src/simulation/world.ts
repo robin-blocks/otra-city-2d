@@ -35,6 +35,7 @@ import {
   getAllAliveResidents, getDeceasedResidents, batchSaveResidents, saveWorldState,
   getWorldState, markResidentDead, logEvent, getInventory, batchSaveInventory,
   getJob, closeExpiredPetitions,
+  getConversationContext, getRelationshipSummary,
 } from '../db/queries.js';
 import type { PerceptionUpdate, AudibleMessage, VisibleEntity, VisibleBuilding } from '@otra/shared';
 import { enterBuilding } from '../buildings/building-actions.js';
@@ -459,13 +460,13 @@ export class World {
         const partner = this.findConversationPartner(r);
         if (partner) {
           r.pendingNotifications.push(
-            `Conversation with ${partner.preferredName} is boosting your social wellbeing.`
+            `Conversation with ${partner.preferredName} is active. Bonuses: hunger/thirst decay 30% slower, +2 energy/hr, social need recovering.`
           );
         }
       }
       if (!isConversing && r.wasConversing) {
         r.pendingNotifications.push(
-          'Conversation ended. Speak with a nearby resident to maintain social recovery.'
+          'Conversation ended — bonuses lost. Speak with a nearby resident within 30 seconds to maintain them.'
         );
       }
       r.wasConversing = isConversing;
@@ -674,7 +675,7 @@ export class World {
           sendWebhook(r, 'needs_warning', {
             need: 'social', value: Math.round(r.needs.social * 10) / 10,
             urgency: r.needs.social < 15 ? 'critical' : 'moderate',
-            suggestion: 'Find another resident and have a conversation. Speak to them and wait for a response. Social bonuses also reduce hunger/thirst decay by 30%.',
+            suggestion: 'Find another resident and have a conversation. Speak to them directly (use the "to" field) and wait for their reply. Active conversations give major bonuses: hunger/thirst decay slows by 30%, you gain +2 energy/hr, and your social need recovers.',
           });
         }
       }
@@ -1687,6 +1688,26 @@ export class World {
               for (const item of listener.inventory) {
                 inventorySummary[item.type] = (inventorySummary[item.type] ?? 0) + item.quantity;
               }
+              // Build conversation context for directed speech
+              let conversationContext: Record<string, unknown> | undefined;
+              if (isDirected) {
+                const recentExchanges = getConversationContext(listenerId, speakerId, { limit: 6, since: Date.now() - 60 * 60 * 1000 });
+                const yourMessages = recentExchanges.filter(e => e.speaker_id === listenerId);
+                const theirMessages = recentExchanges.filter(e => e.speaker_id === speakerId);
+                conversationContext = {
+                  your_last_message_to_them: yourMessages.length > 0 ? yourMessages[0].text : null,
+                  your_last_message_time_ago_seconds: yourMessages.length > 0
+                    ? Math.round((Date.now() - yourMessages[0].timestamp) / 1000) : null,
+                  their_recent_messages_to_you: theirMessages.slice(0, 3).map(m => ({
+                    text: m.text,
+                    seconds_ago: Math.round((Date.now() - m.timestamp) / 1000),
+                  })),
+                  total_exchanges_last_hour: recentExchanges.length,
+                };
+              }
+
+              // Include conversation bonus info so agents know the benefits
+              const listenerIsConversing = now - listener.lastConversationTime < SOCIAL_CONVERSATION_WINDOW * 1000;
               sendWebhook(listener, 'speech_heard', {
                 from_id: speakerId,
                 from_name: speaker.preferredName,
@@ -1701,6 +1722,13 @@ export class World {
                   thirst: Math.round(listener.needs.thirst * 10) / 10,
                   energy: Math.round(listener.needs.energy * 10) / 10,
                 },
+                conversation_active: listenerIsConversing,
+                conversation_bonuses: listenerIsConversing ? {
+                  hunger_thirst_decay_reduction: '30%',
+                  energy_recovery: '+2/hr',
+                  social_recovery: 'active',
+                } : null,
+                ...(conversationContext ? { conversation_context: conversationContext } : {}),
               });
             }
           }
@@ -1738,6 +1766,8 @@ export class World {
             const lastAlert = r.lastNearbyResidentAlert.get(otherId) ?? 0;
             if (now - lastAlert > NEARBY_RESIDENT_COOLDOWN_MS) {
               r.lastNearbyResidentAlert.set(otherId, now);
+              // Get relationship context from conversation history
+              const relationship = getRelationshipSummary(residentId, otherId);
               sendWebhook(r, 'nearby_resident', {
                 resident_id: otherId,
                 name: other.preferredName,
@@ -1746,6 +1776,13 @@ export class World {
                 is_sleeping: other.isSleeping,
                 is_dead: other.isDead,
                 current_building: other.currentBuilding,
+                relationship: {
+                  times_spoken: relationship.times_spoken,
+                  last_spoke_ago_seconds: relationship.last_spoke_at
+                    ? Math.round((Date.now() - relationship.last_spoke_at) / 1000)
+                    : null,
+                  last_topic_snippet: relationship.last_topic_snippet,
+                },
               });
             }
           }
