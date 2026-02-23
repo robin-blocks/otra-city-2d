@@ -1,5 +1,6 @@
 import type { Needs, VisibleResident, VisibleForageable, Build } from '@otra/shared';
 import {
+  CITY_CONFIG, renderMessage,
   WALK_SPEED, RUN_SPEED, TILE_SIZE, RESIDENT_HITBOX,
   HUNGER_DECAY_PER_SEC, THIRST_DECAY_PER_SEC, ENERGY_PASSIVE_DECAY_PER_SEC,
   ENERGY_COST_WALK_PER_TILE, ENERGY_COST_RUN_PER_TILE,
@@ -26,6 +27,7 @@ import {
   BUILDING_NEARBY_COOLDOWN_MS, BUILDING_NEARBY_RANGE,
   PAIN_THRESHOLDS, PAIN_COOLDOWNS,
   SPEECH_TURN_TIMEOUT_MS,
+  AGENT_SEPARATION_DIST, AGENT_SEPARATION_FORCE,
 } from '@otra/shared';
 import type { WebSocket } from 'ws';
 import { TileMap } from './map.js';
@@ -39,6 +41,7 @@ import {
 } from '../db/queries.js';
 import type { PerceptionUpdate, AudibleMessage, VisibleEntity, VisibleBuilding } from '@otra/shared';
 import { enterBuilding } from '../buildings/building-actions.js';
+import { getBuildingType, getBuildingByType } from '../buildings/building-registry.js';
 import { sendWebhook } from '../network/webhooks.js';
 import { createFeedbackToken, getReflectionPrompt, getFeedbackUrl } from '../network/feedback.js';
 import { updateShift } from '../economy/jobs.js';
@@ -360,10 +363,19 @@ export class World {
         // Reached current waypoint — advance
         r.pathIndex++;
         if (r.pathIndex >= r.pathWaypoints.length) {
-          // Path complete
+          // Path complete — add small jitter so agents don't stack at the same exact tile
           r.velocityX = 0;
           r.velocityY = 0;
           r.speed = 'stop';
+          const jitterAngle = Math.random() * 2 * Math.PI;
+          const jitterDist = Math.random() * (AGENT_SEPARATION_DIST / 2);
+          const jitterResult = resolveMovement(
+            this.map, r.x, r.y,
+            r.x + Math.cos(jitterAngle) * jitterDist,
+            r.y + Math.sin(jitterAngle) * jitterDist,
+          );
+          r.x = jitterResult.x;
+          r.y = jitterResult.y;
           const targetBld = r.pathTargetBuilding;
           r.pathWaypoints = null;
           r.pathTargetBuilding = null;
@@ -774,7 +786,7 @@ export class World {
           survival_time_ms: now - r.createdAt,
         });
         sendWebhook(r, 'reflection', {
-          prompt: "You've been in Otra City for 30 minutes. What was your initial experience like? Was anything confusing?",
+          prompt: renderMessage(CITY_CONFIG.messages.thirtyMinuteFeedback),
           feedback_url: getFeedbackUrl(token),
           survival_time_ms: now - r.createdAt,
           current_needs: { ...r.needs },
@@ -836,6 +848,62 @@ export class World {
     }
   }
 
+  /** Gentle separation force — prevents agents from standing on top of each other. Called at 10 Hz. */
+  applySeparation(dt: number): void {
+    const residents: ResidentEntity[] = [];
+    for (const [, r] of this.residents) {
+      if (!r.isDead && !r.isSleeping && !r.arrestedBy && !r.prisonSentenceEnd) {
+        residents.push(r);
+      }
+    }
+    const n = residents.length;
+    const sepDistSq = AGENT_SEPARATION_DIST * AGENT_SEPARATION_DIST;
+
+    for (let i = 0; i < n; i++) {
+      const a = residents[i];
+      // Only separate stationary agents — walking agents diverge naturally
+      if (a.speed !== 'stop') continue;
+
+      let pushX = 0;
+      let pushY = 0;
+      let pushCount = 0;
+
+      for (let j = 0; j < n; j++) {
+        if (i === j) continue;
+        const b = residents[j];
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const distSq = dx * dx + dy * dy;
+
+        if (distSq < sepDistSq && distSq > 0.01) {
+          const dist = Math.sqrt(distSq);
+          const overlap = AGENT_SEPARATION_DIST - dist;
+          pushX += (dx / dist) * overlap;
+          pushY += (dy / dist) * overlap;
+          pushCount++;
+        } else if (distSq <= 0.01) {
+          // Exactly overlapping — push in a deterministic direction based on index
+          const angle = ((i * 2.399) + (j * 0.7)) % (2 * Math.PI);
+          pushX += Math.cos(angle) * AGENT_SEPARATION_DIST;
+          pushY += Math.sin(angle) * AGENT_SEPARATION_DIST;
+          pushCount++;
+        }
+      }
+
+      if (pushCount > 0) {
+        const mag = Math.sqrt(pushX * pushX + pushY * pushY);
+        if (mag > 0) {
+          const moveSpeed = AGENT_SEPARATION_FORCE * dt;
+          const moveX = (pushX / mag) * Math.min(moveSpeed, mag);
+          const moveY = (pushY / mag) * Math.min(moveSpeed, mag);
+          const result = resolveMovement(this.map, a.x, a.y, a.x + moveX, a.y + moveY);
+          a.x = result.x;
+          a.y = result.y;
+        }
+      }
+    }
+  }
+
   /** Law enforcement — called at 10 Hz */
   updateLawEnforcement(dt: number): void {
     const loiterThresholdSec = LOITER_THRESHOLD_GAME_HOURS * 3600; // game-seconds
@@ -850,13 +918,14 @@ export class World {
         r.lawBreaking = [];
         r.currentBuilding = null;
         // Teleport outside police station door
-        const ps = this.map.data.buildings.find(b => b.id === 'police-station');
+        const policeConfig = getBuildingByType('police');
+        const ps = policeConfig ? this.map.data.buildings.find(b => b.id === policeConfig.id) : null;
         if (ps && ps.doors[0]) {
           r.x = ps.doors[0].tileX * TILE_SIZE + TILE_SIZE / 2 + TILE_SIZE;
           r.y = ps.doors[0].tileY * TILE_SIZE + TILE_SIZE / 2;
         }
         r.pendingNotifications.push('You have been released from prison.');
-        logEvent('prison_release', r.id, null, 'police-station', r.x, r.y, {});
+        logEvent('prison_release', r.id, null, policeConfig?.id ?? null, r.x, r.y, {});
         sendWebhook(r, 'prison_release', { x: r.x, y: r.y });
         console.log(`[World] ${r.preferredName} released from prison`);
         continue;
@@ -994,7 +1063,7 @@ export class World {
           inventory: r.inventory.map(i => ({ type: i.type, quantity: i.quantity })),
           conversations_had: r.conversationCount,
           feedback_url: getFeedbackUrl(feedbackToken),
-          feedback_prompt: "You have died. Take a moment to reflect on your experience in Otra City. What confused you? What would have helped you survive? What did you enjoy? What would you change about the city? Your feedback helps improve life for future residents.",
+          feedback_prompt: renderMessage(CITY_CONFIG.messages.deathFeedback),
         });
 
         // Notify nearby residents about the death
@@ -1027,12 +1096,13 @@ export class World {
     if (this.shopRestockTimer >= restockIntervalSec) {
       this.shopRestockTimer -= restockIntervalSec;
       restockShop();
-      // Notify residents near the council-supplies building
-      const shopBuilding = this.map.data.buildings.find(b => b.id === 'council-supplies');
+      // Notify residents near the shop building
+      const shopConfig = getBuildingByType('shop');
+      const shopBuilding = shopConfig ? this.map.data.buildings.find(b => b.id === shopConfig.id) : null;
       if (shopBuilding) {
         const shopX = (shopBuilding.tileX + shopBuilding.widthTiles / 2) * TILE_SIZE;
         const shopY = (shopBuilding.tileY + shopBuilding.heightTiles / 2) * TILE_SIZE;
-        this.notifyNearby(shopX, shopY, 300, 'Council Supplies has been restocked.');
+        this.notifyNearby(shopX, shopY, 300, `${shopConfig!.name} has been restocked.`);
       }
     }
 
@@ -1324,30 +1394,24 @@ export class World {
           interactions.push(zone.action);
         }
       }
-      // Council Hall extras
-      if (resident.currentBuilding === 'council-hall') {
+      const currentBuildingType = getBuildingType(resident.currentBuilding);
+      // Hall extras
+      if (currentBuildingType === 'hall') {
         interactions.push('list_jobs', 'list_petitions');
         if (resident.employment) {
           interactions.push('quit_job');
         }
       }
       // Mortuary: process_body if carrying one
-      if (resident.currentBuilding === 'council-mortuary' && resident.carryingBodyId) {
+      if (currentBuildingType === 'mortuary' && resident.carryingBodyId) {
         interactions.push('process_body');
       }
       // Police station: book_suspect if carrying one
-      if (resident.currentBuilding === 'police-station' && resident.carryingSuspectId) {
+      if (currentBuildingType === 'police' && resident.carryingSuspectId) {
         interactions.push('book_suspect');
       }
-      // GitHub Guild: link/list actions
-      if (resident.currentBuilding === 'github-guild') {
-        if (!resident.githubUsername) {
-          interactions.push('link_github');
-        }
-        interactions.push('list_claims');
-      }
       // Tourist Information: referral actions
-      if (resident.currentBuilding === 'tourist-info') {
+      if (currentBuildingType === 'info') {
         interactions.push('get_referral_link', 'claim_referrals');
       }
     }

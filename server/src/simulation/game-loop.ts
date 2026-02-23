@@ -57,6 +57,7 @@ export class GameLoop {
     while (this.simAccumulator >= this.SIM_STEP) {
       const dt = this.SIM_STEP / 1000;
       this.world.updateNeeds(dt);
+      this.world.applySeparation(dt);
       this.world.updateLawEnforcement(dt);
       this.world.updateForageables(dt);
       this.world.checkDeaths();

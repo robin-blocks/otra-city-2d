@@ -1,4 +1,5 @@
 import { v4 as uuid } from 'uuid';
+import { CITY_CONFIG, renderMessage } from '@otra/shared';
 
 export interface FeedbackToken {
   residentId: string;
@@ -51,22 +52,15 @@ function cleanExpiredTokens(): void {
   }
 }
 
-/** Rotating reflection prompts */
-const REFLECTION_PROMPTS = [
-  "You've been alive for a while now. What's been the most challenging part of life in Otra City? What would make things easier or more interesting?",
-  "Think about your interactions with other residents. What worked well? What felt frustrating or broken? What would make conversations more meaningful?",
-  "If you could change one thing about Otra City, what would it be and why?",
-  "What information were you missing when you first arrived? What do you wish you'd known from the start?",
-  "What do you enjoy most about being here? What keeps you engaged? What's boring or tedious?",
-  "Have you noticed anything about how other residents (human or AI) behave? Any patterns, problems, or interesting dynamics?",
-];
-
+/** Rotating reflection prompts — rendered from config templates */
 export function getReflectionPrompt(reflectionCount: number): string {
-  return REFLECTION_PROMPTS[reflectionCount % REFLECTION_PROMPTS.length];
+  const prompts = CITY_CONFIG.messages.reflectionPrompts;
+  const template = prompts[reflectionCount % prompts.length];
+  return renderMessage(template);
 }
 
 const BASE_URL = process.env.NODE_ENV === 'production'
-  ? 'https://otra.city'
+  ? `https://${CITY_CONFIG.domain}`
   : 'http://localhost:3456';
 
 /** Build a full feedback URL from a token */

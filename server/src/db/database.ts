@@ -2,13 +2,14 @@ import Database from 'better-sqlite3';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { CITY_CONFIG } from '@otra/shared';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let db: Database.Database;
 
 export function initDatabase(dbPath?: string): Database.Database {
-  const path = dbPath || process.env.DB_PATH || join(__dirname, '..', '..', 'otra-city.db');
+  const path = dbPath || process.env.DB_PATH || join(__dirname, '..', '..', CITY_CONFIG.dbFilename);
   db = new Database(path);
 
   // Enable WAL mode for better concurrent read performance
@@ -73,7 +74,7 @@ export function initDatabase(dbPath?: string): Database.Database {
     db.exec("ALTER TABLE residents ADD COLUMN social REAL NOT NULL DEFAULT 100");
   }
 
-  // Seed jobs table with definitions if empty
+  // Seed jobs table from config if empty
   const jobCount = (db.prepare('SELECT COUNT(*) as count FROM jobs').get() as { count: number }).count;
   if (jobCount === 0) {
     const seedJobs = db.prepare(`
@@ -81,31 +82,31 @@ export function initDatabase(dbPath?: string): Database.Database {
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     const insertAll = db.transaction(() => {
-      seedJobs.run('bank-teller',      'Bank Teller',       'bank',             10, 8, 2, 'Process UBI claims and manage deposits at the Otra City Bank.');
-      seedJobs.run('shop-clerk',       'Shop Clerk',        'council-supplies', 10, 8, 2, 'Stock shelves and serve customers at Council Supplies.');
-      seedJobs.run('toilet-attendant', 'Toilet Attendant',  'council-toilet',    8, 8, 1, 'Maintain the Council Toilet facilities.');
-      seedJobs.run('body-collector',   'Body Collector',    'council-mortuary', 12, 8, 2, 'Collect deceased residents and transport them to the mortuary.');
-      seedJobs.run('hall-clerk',       'Hall Clerk',        'council-hall',     10, 8, 1, 'Process job applications and free petitions at the Council Hall. Help residents participate in civic life.');
-      seedJobs.run('groundskeeper',    'Groundskeeper',     null,                8, 8, 2, 'Maintain the city grounds and public spaces.');
-      seedJobs.run('station-master',   'Station Master',    'train-station',    10, 8, 1, 'Manage train arrivals and departures at the station.');
-      seedJobs.run('police-officer',  'Police Officer',    'police-station',   10, 8, 3, 'Patrol the city and arrest lawbreakers. Earn Ɋ10 bounty per booking.');
+      for (const job of CITY_CONFIG.jobs) {
+        seedJobs.run(job.id, job.title, job.buildingId, job.wagePerShift, job.shiftDurationHours, job.maxPositions, job.description);
+      }
     });
     insertAll();
-    console.log('[DB] Seeded 8 job definitions');
+    console.log(`[DB] Seeded ${CITY_CONFIG.jobs.length} job definitions`);
   } else {
-    // Ensure police-officer job exists in older DBs
-    db.prepare(`
+    // Ensure all configured jobs exist in older DBs
+    const upsertJob = db.prepare(`
       INSERT OR IGNORE INTO jobs (id, title, building_id, wage_per_shift, shift_duration_hours, max_positions, description)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run('police-officer', 'Police Officer', 'police-station', 10, 8, 3, 'Patrol the city and arrest lawbreakers. Earn Ɋ10 bounty per booking.');
+    `);
+    for (const job of CITY_CONFIG.jobs) {
+      upsertJob.run(job.id, job.title, job.buildingId, job.wagePerShift, job.shiftDurationHours, job.maxPositions, job.description);
+    }
   }
 
-  // Seed laws table
+  // Seed laws table from config
   const lawCount = (db.prepare('SELECT COUNT(*) as count FROM laws').get() as { count: number }).count;
   if (lawCount === 0) {
-    db.prepare('INSERT INTO laws (id, name, description, sentence_game_hours) VALUES (?, ?, ?, ?)')
-      .run('loitering', 'Loitering', 'Standing in the same place for more than 1 game hour.', 2);
-    console.log('[DB] Seeded 1 law definition');
+    const seedLaw = db.prepare('INSERT INTO laws (id, name, description, sentence_game_hours) VALUES (?, ?, ?, ?)');
+    for (const law of CITY_CONFIG.laws) {
+      seedLaw.run(law.id, law.name, law.description, law.sentenceGameHours);
+    }
+    console.log(`[DB] Seeded ${CITY_CONFIG.laws.length} law definitions`);
   }
 
   console.log(`[DB] Initialized at ${path}`);

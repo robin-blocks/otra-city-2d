@@ -50,7 +50,7 @@ export function writePetition(
   const id = uuid();
   const petition = createPetition(id, resident.id, category, description);
 
-  logEvent('write_petition', resident.id, null, 'council-hall', resident.x, resident.y, {
+  logEvent('write_petition', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
     petition_id: id, category, description, cost: PETITION_COST_QUID,
   });
 
@@ -92,7 +92,7 @@ export function voteOnPetition(
   const voteValue = vote === 'against' ? 'against' : 'for';
   dbVotePetition(petitionId, resident.id, voteValue);
 
-  logEvent('vote_petition', resident.id, null, 'council-hall', resident.x, resident.y, {
+  logEvent('vote_petition', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
     petition_id: petitionId, vote: voteValue,
   });
 

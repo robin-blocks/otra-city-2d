@@ -63,9 +63,10 @@ export const WAKE_COOLDOWN_MS = 10_000;                // min 10s of sleep befor
 export const WAKE_MIN_ENERGY = 20;                     // must have >= 20 energy to wake
 
 // === Economy ===
-export const UBI_AMOUNT = 0;                  // QUID per day — UBI discontinued, foraging replaces it
+import { CITY_CONFIG } from './city-config.js';
+export const UBI_AMOUNT = CITY_CONFIG.ubiAmount;
 export const UBI_COOLDOWN_SEC = 24 * 3600;    // 24 hours between collections
-export const STARTING_QUID = 5;              // reduced from 15 — emergency fund only
+export const STARTING_QUID = CITY_CONFIG.startingMoney;
 
 // === Train ===
 export const TRAIN_INTERVAL_SEC = 15 * 60;    // 900 game-seconds = 15 game-minutes (5 real minutes at 3x)
@@ -92,6 +93,10 @@ export const BODY_COLLECT_RANGE = 64;         // px — must be within 2 tiles o
 
 // === Shop stock ===
 export const SHOP_RESTOCK_INTERVAL_GAME_HOURS = 2;  // restock every 2 game hours
+
+// === Agent separation ===
+export const AGENT_SEPARATION_DIST = 20;    // px — soft minimum distance between standing agents
+export const AGENT_SEPARATION_FORCE = 30;   // px/sec — gentle push-apart speed
 
 // === Social ===
 export const SOCIAL_PROXIMITY_RANGE = 100;    // px — range for social bonus
@@ -125,12 +130,12 @@ export const ARREST_BOUNTY = 10;               // QUID per booking
 export const ENERGY_COST_ARREST = 0.5;
 export const LOITER_SENTENCE_GAME_HOURS = 2;   // prison sentence for loitering
 
-// === GitHub Guild ===
-export const GITHUB_ISSUE_REWARD = 5;                       // QUID for accepted issue
-export const GITHUB_PR_EASY_REWARD = 15;                    // QUID for easy PR
-export const GITHUB_PR_MEDIUM_REWARD = 40;                  // QUID for medium PR
-export const GITHUB_PR_HARD_REWARD = 100;                   // QUID for hard PR
-export const GITHUB_CLAIM_COOLDOWN_SEC = 60;                // game-seconds between claims
+// === GitHub Guild (Otra City-specific, not part of standard framework) ===
+export const GITHUB_ISSUE_REWARD = 5;
+export const GITHUB_PR_EASY_REWARD = 15;
+export const GITHUB_PR_MEDIUM_REWARD = 40;
+export const GITHUB_PR_HARD_REWARD = 100;
+export const GITHUB_CLAIM_COOLDOWN_SEC = 60;
 export const GITHUB_REPO = 'robin-blocks/otra-city-2d';
 
 // === Referrals ===
@@ -168,5 +173,6 @@ export const NEARBY_RESIDENT_COOLDOWN_MS = 10 * 60 * 1000; // 10 min between ale
 export const BUILDING_NEARBY_COOLDOWN_MS = 30 * 60 * 1000; // 30 min between alerts per building
 export const BUILDING_NEARBY_RANGE = 200;                // px — trigger building_nearby webhook
 
-// === Currency symbol ===
-export const QUID_SYMBOL = 'Ɋ';              // Ɋ (Latin capital Q with hook tail, U+024A)
+// === Currency ===
+export const QUID_SYMBOL = CITY_CONFIG.currencySymbol;
+export const CURRENCY_NAME = CITY_CONFIG.currencyName;

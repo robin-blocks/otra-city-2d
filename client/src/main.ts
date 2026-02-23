@@ -1,5 +1,6 @@
 import { Game } from './game/game.js';
 import { getFrameworkStyle } from './ui/framework-colors.js';
+import { CITY_CONFIG } from '@otra/shared';
 
 declare function gtag(...args: any[]): void;
 
@@ -66,7 +67,7 @@ async function start() {
   }
 
   // Check for saved token (reconnect from previous session)
-  const savedToken = sessionStorage.getItem('otra-token');
+  const savedToken = sessionStorage.getItem(CITY_CONFIG.sessionStorageKey);
   if (savedToken) {
     try {
       landing.style.display = 'none';
@@ -76,7 +77,7 @@ async function start() {
       track('view_player');
     } catch (err) {
       console.warn('Saved token invalid, showing landing');
-      sessionStorage.removeItem('otra-token');
+      sessionStorage.removeItem(CITY_CONFIG.sessionStorageKey);
       landing.style.display = 'block';
       hud.style.display = 'none';
       eventFeed.style.display = 'none';

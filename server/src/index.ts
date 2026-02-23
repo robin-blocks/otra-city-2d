@@ -8,6 +8,7 @@ import { World } from './simulation/world.js';
 import { GameLoop } from './simulation/game-loop.js';
 import { WsServer } from './network/ws-server.js';
 import { handleHttpRequest } from './network/http-routes.js';
+import { CITY_CONFIG, renderMessage } from '@otra/shared';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3456', 10);
@@ -69,7 +70,7 @@ function serveStaticFile(req: import('http').IncomingMessage, res: import('http'
 }
 
 async function main() {
-  console.log('=== OTRA CITY SERVER ===');
+  console.log(renderMessage(CITY_CONFIG.messages.serverBanner));
   console.log(`Starting on port ${PORT}...`);
 
   // 1. Initialize database
@@ -113,7 +114,7 @@ async function main() {
     console.log(`[API]  GET  /api/map — Get the map data`);
     console.log(`[API]  GET  /api/status — Server status`);
     console.log('');
-    console.log('Otra City is running. Waiting for residents...');
+    console.log(`${CITY_CONFIG.name} is running. Waiting for residents...`);
   });
 
   // Graceful shutdown

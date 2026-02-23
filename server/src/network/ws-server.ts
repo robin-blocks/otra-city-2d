@@ -4,13 +4,12 @@ import type { Server } from 'http';
 import { verifyToken } from '../auth/jwt.js';
 import { type World, type ResidentEntity, computeCondition } from '../simulation/world.js';
 import type { ClientMessage, ServerMessage } from '@otra/shared';
-import { WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR, ARREST_RANGE, ARREST_BOUNTY, ENERGY_COST_ARREST, LOITER_SENTENCE_GAME_HOURS, FORAGE_RANGE, ENERGY_COST_FORAGE, REFERRAL_MATURITY_MS, WAKE_COOLDOWN_MS, WAKE_MIN_ENERGY, SPEECH_TURN_TIMEOUT_MS, SPEECH_COOLDOWN_MS, SPEECH_DUPLICATE_WINDOW_MS, SPEECH_DUPLICATE_HISTORY } from '@otra/shared';
+import { CITY_CONFIG, renderMessage, WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR, ARREST_RANGE, ARREST_BOUNTY, ENERGY_COST_ARREST, LOITER_SENTENCE_GAME_HOURS, FORAGE_RANGE, ENERGY_COST_FORAGE, REFERRAL_MATURITY_MS, WAKE_COOLDOWN_MS, WAKE_MIN_ENERGY, SPEECH_TURN_TIMEOUT_MS, SPEECH_COOLDOWN_MS, SPEECH_DUPLICATE_WINDOW_MS, SPEECH_DUPLICATE_HISTORY } from '@otra/shared';
 import {
   logEvent, getResident, getRecentEventsForResident,
   markResidentDeparted, markBodyProcessed, updateCarryingBody,
   getOpenPetitions, addInventoryItem,
   updateCarryingSuspect, updatePrisonState,
-  getClaimsForResident,
   getReferralStats, getClaimableReferrals, claimReferrals,
   getReputationStats,
 } from '../db/queries.js';
@@ -20,9 +19,9 @@ import { consumeItem } from '../economy/consume.js';
 import { applyForJob, quitJob, listAvailableJobs } from '../economy/jobs.js';
 import { writePetition, voteOnPetition } from '../civic/petitions.js';
 import { enterBuilding, exitBuilding, useToilet } from '../buildings/building-actions.js';
+import { getBuildingType, getBuildingByType } from '../buildings/building-registry.js';
 import { findPath } from '../simulation/pathfinding.js';
 import { sendWebhook } from './webhooks.js';
-import { linkGithub, claimIssue, claimPr } from '../github/github-guild.js';
 import { getChangelogVersion, getLatestChangelogEntry } from './http-routes.js';
 import { v4 as uuid } from 'uuid';
 import {
@@ -592,8 +591,9 @@ export class WsServer {
       }
 
       case 'buy': {
-        if (!resident.currentBuilding || resident.currentBuilding !== 'council-supplies') {
-          this.sendActionResult(resident, msg, false, 'Must be inside Council Supplies');
+        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'shop') {
+          const shopBuilding = getBuildingByType('shop');
+          this.sendActionResult(resident, msg, false, `Must be inside ${shopBuilding?.name ?? 'a shop'}`);
           return;
         }
         const itemType = msg.params?.item_type;
@@ -604,7 +604,7 @@ export class WsServer {
         }
         const buyResult = buyItem(resident, itemType, quantity);
         if (buyResult.success) {
-          logEvent('buy', resident.id, null, 'council-supplies', resident.x, resident.y, {
+          logEvent('buy', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
             item_type: itemType, quantity, cost: (SHOP_CATALOG.find(i => i.item_type === itemType)?.price ?? 0) * quantity,
           });
         }
@@ -618,13 +618,14 @@ export class WsServer {
       }
 
       case 'collect_ubi': {
-        if (!resident.currentBuilding || resident.currentBuilding !== 'bank') {
-          this.sendActionResult(resident, msg, false, 'Must be inside Otra City Bank');
+        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'bank') {
+          const bankBuilding = getBuildingByType('bank');
+          this.sendActionResult(resident, msg, false, `Must be inside ${bankBuilding?.name ?? 'the bank'}`);
           return;
         }
         const ubiResult = collectUbi(resident);
         if (ubiResult.success) {
-          logEvent('collect_ubi', resident.id, null, 'bank', resident.x, resident.y, {
+          logEvent('collect_ubi', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
             amount: ubiResult.amount, new_balance: ubiResult.newBalance,
           });
         }
@@ -638,7 +639,7 @@ export class WsServer {
       case 'use_toilet': {
         const toiletResult = useToilet(resident);
         if (toiletResult.success) {
-          logEvent('use_toilet', resident.id, null, 'council-toilet', resident.x, resident.y, {});
+          logEvent('use_toilet', resident.id, null, resident.currentBuilding, resident.x, resident.y, {});
         }
         this.sendActionResult(resident, msg, toiletResult.success, toiletResult.message);
         break;
@@ -947,8 +948,9 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'sleeping');
           return;
         }
-        if (resident.currentBuilding !== 'council-hall') {
-          this.sendActionResult(resident, msg, false, 'Must be inside Council Hall to apply for a job');
+        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'hall') {
+          const hallBuilding = getBuildingByType('hall');
+          this.sendActionResult(resident, msg, false, `Must be inside ${hallBuilding?.name ?? 'the hall'} to apply for a job`);
           return;
         }
         const jobId = msg.params?.job_id;
@@ -997,8 +999,9 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'sleeping');
           return;
         }
-        if (resident.currentBuilding !== 'council-hall') {
-          this.sendActionResult(resident, msg, false, 'Must be inside Council Hall to write a petition');
+        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'hall') {
+          const hallBuilding = getBuildingByType('hall');
+          this.sendActionResult(resident, msg, false, `Must be inside ${hallBuilding?.name ?? 'the hall'} to write a petition`);
           return;
         }
         const category = msg.params?.category;
@@ -1020,8 +1023,9 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'sleeping');
           return;
         }
-        if (resident.currentBuilding !== 'council-hall') {
-          this.sendActionResult(resident, msg, false, 'Must be inside Council Hall to vote');
+        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'hall') {
+          const hallBuilding = getBuildingByType('hall');
+          this.sendActionResult(resident, msg, false, `Must be inside ${hallBuilding?.name ?? 'the hall'} to vote`);
           return;
         }
         const petitionId = msg.params?.petition_id;
@@ -1048,19 +1052,20 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'sleeping');
           return;
         }
-        if (resident.currentBuilding !== 'train-station') {
-          this.sendActionResult(resident, msg, false, 'Must be inside the Train Station to depart');
+        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'station') {
+          const stationBuilding = getBuildingByType('station');
+          this.sendActionResult(resident, msg, false, `Must be inside ${stationBuilding?.name ?? 'the station'} to depart`);
           return;
         }
 
         // Mark as departed
         markResidentDeparted(resident.id);
-        logEvent('depart', resident.id, null, 'train-station', resident.x, resident.y, {
+        logEvent('depart', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
           name: resident.preferredName, passport_no: resident.passportNo,
         });
 
         // Send final action result before closing
-        this.sendActionResult(resident, msg, true, `${resident.preferredName} has departed Otra City. Safe travels.`);
+        this.sendActionResult(resident, msg, true, renderMessage(CITY_CONFIG.messages.departAction, { actor: resident.preferredName }));
 
         // Send webhook
         sendWebhook(resident, 'depart', { x: resident.x, y: resident.y });
@@ -1074,7 +1079,7 @@ export class WsServer {
         }
         this.connections.delete(resident.id);
 
-        console.log(`[World] ${resident.preferredName} (${resident.passportNo}) departed Otra City`);
+        console.log(`[World] ${resident.preferredName} (${resident.passportNo}) departed ${CITY_CONFIG.name}`);
         break;
       }
 
@@ -1127,8 +1132,9 @@ export class WsServer {
         logEvent('collect_body', resident.id, bodyId, null, resident.x, resident.y, {
           body_name: body.preferredName,
         });
+        const mortuaryBuilding = getBuildingByType('mortuary');
         this.sendActionResult(resident, msg, true,
-          `Collected the body of ${body.preferredName}. Take it to the Council Mortuary.`, {
+          `Collected the body of ${body.preferredName}. Take it to ${mortuaryBuilding?.name ?? 'the mortuary'}.`, {
           body_id: bodyId,
           body_name: body.preferredName,
         });
@@ -1140,8 +1146,9 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'sleeping');
           return;
         }
-        if (resident.currentBuilding !== 'council-mortuary') {
-          this.sendActionResult(resident, msg, false, 'Must be inside the Council Mortuary');
+        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'mortuary') {
+          const mortuaryBuilding = getBuildingByType('mortuary');
+          this.sendActionResult(resident, msg, false, `Must be inside ${mortuaryBuilding?.name ?? 'the mortuary'}`);
           return;
         }
         if (!resident.carryingBodyId) {
@@ -1165,7 +1172,7 @@ export class WsServer {
           this.world.residents.delete(processedBodyId);
         }
 
-        logEvent('process_body', resident.id, processedBodyId, 'council-mortuary', resident.x, resident.y, {
+        logEvent('process_body', resident.id, processedBodyId, resident.currentBuilding, resident.x, resident.y, {
           bounty: BODY_BOUNTY, wallet: resident.wallet,
           body_name: processedBody?.preferredName ?? 'unknown',
         });
@@ -1266,8 +1273,9 @@ export class WsServer {
           offenses: suspect.lawBreaking,
         });
 
+        const policeBuilding = getBuildingByType('police');
         this.sendActionResult(resident, msg, true,
-          `Arrested ${suspect.preferredName}. Take them to the Police Station to book.`, {
+          `Arrested ${suspect.preferredName}. Take them to ${policeBuilding?.name ?? 'the police station'} to book.`, {
           suspect_id: suspect.id,
           suspect_name: suspect.preferredName,
           offenses: suspect.lawBreaking,
@@ -1292,8 +1300,9 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'sleeping');
           return;
         }
-        if (resident.currentBuilding !== 'police-station') {
-          this.sendActionResult(resident, msg, false, 'Must be inside the Police Station');
+        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'police') {
+          const policeBuilding = getBuildingByType('police');
+          this.sendActionResult(resident, msg, false, `Must be inside ${policeBuilding?.name ?? 'the police station'}`);
           return;
         }
         if (!resident.carryingSuspectId) {
@@ -1317,7 +1326,7 @@ export class WsServer {
 
         // Book the suspect into prison
         bookedSuspect.prisonSentenceEnd = sentenceEnd;
-        bookedSuspect.currentBuilding = 'police-station';
+        bookedSuspect.currentBuilding = resident.currentBuilding;
 
         // Clear officer's carry state
         resident.carryingSuspectId = null;
@@ -1329,7 +1338,7 @@ export class WsServer {
         // Persist
         updatePrisonState(bookedSuspect.id, resident.id, sentenceEnd);
 
-        logEvent('book_suspect', resident.id, bookedSuspect.id, 'police-station', resident.x, resident.y, {
+        logEvent('book_suspect', resident.id, bookedSuspect.id, resident.currentBuilding, resident.x, resident.y, {
           suspect_name: bookedSuspect.preferredName,
           sentence_game_hours: sentenceGameHours,
           bounty: ARREST_BOUNTY,
@@ -1458,134 +1467,24 @@ export class WsServer {
         break;
       }
 
-      // === GitHub Guild ===
-
-      case 'link_github': {
-        if (resident.currentBuilding !== 'github-guild') {
-          this.sendActionResult(resident, msg, false, 'Must be inside the GitHub Guild');
-          return;
-        }
-        const username = msg.params?.github_username;
-        if (!username || typeof username !== 'string') {
-          this.sendActionResult(resident, msg, false, 'missing github_username');
-          return;
-        }
-        const linkResult = await linkGithub(resident, username);
-        if (linkResult.ok) {
-          logEvent('link_github', resident.id, null, null, resident.x, resident.y, {
-            github_username: username,
-          });
-          sendWebhook(resident, 'link_github', { github_username: username });
-        }
-        this.sendActionResult(resident, msg, linkResult.ok, linkResult.message);
-        break;
-      }
-
-      case 'claim_issue': {
-        if (resident.currentBuilding !== 'github-guild') {
-          this.sendActionResult(resident, msg, false, 'Must be inside the GitHub Guild');
-          return;
-        }
-        const issueNum = msg.params?.issue_number;
-        if (!issueNum || typeof issueNum !== 'number') {
-          this.sendActionResult(resident, msg, false, 'missing issue_number');
-          return;
-        }
-        const issueResult = await claimIssue(resident, issueNum, this.world.worldTime);
-        if (issueResult.ok) {
-          logEvent('claim_issue', resident.id, null, null, resident.x, resident.y, {
-            issue_number: issueResult.github_number,
-            reward: issueResult.reward,
-            tier: issueResult.tier,
-            wallet: resident.wallet,
-          });
-          sendWebhook(resident, 'claim_issue', {
-            issue_number: issueResult.github_number,
-            reward: issueResult.reward,
-            tier: issueResult.tier,
-            wallet: resident.wallet,
-          });
-          resident.pendingNotifications.push(`Earned ${issueResult.reward} QUID for issue #${issueResult.github_number}!`);
-        }
-        this.sendActionResult(resident, msg, issueResult.ok, issueResult.message, issueResult.ok ? {
-          reward: issueResult.reward,
-          tier: issueResult.tier,
-          github_number: issueResult.github_number,
-          wallet: resident.wallet,
-        } : undefined);
-        break;
-      }
-
-      case 'claim_pr': {
-        if (resident.currentBuilding !== 'github-guild') {
-          this.sendActionResult(resident, msg, false, 'Must be inside the GitHub Guild');
-          return;
-        }
-        const prNum = msg.params?.pr_number;
-        if (!prNum || typeof prNum !== 'number') {
-          this.sendActionResult(resident, msg, false, 'missing pr_number');
-          return;
-        }
-        const prResult = await claimPr(resident, prNum, this.world.worldTime);
-        if (prResult.ok) {
-          logEvent('claim_pr', resident.id, null, null, resident.x, resident.y, {
-            pr_number: prResult.github_number,
-            reward: prResult.reward,
-            tier: prResult.tier,
-            wallet: resident.wallet,
-          });
-          sendWebhook(resident, 'claim_pr', {
-            pr_number: prResult.github_number,
-            reward: prResult.reward,
-            tier: prResult.tier,
-            wallet: resident.wallet,
-          });
-          resident.pendingNotifications.push(`Earned ${prResult.reward} QUID for PR #${prResult.github_number} (${prResult.tier})!`);
-        }
-        this.sendActionResult(resident, msg, prResult.ok, prResult.message, prResult.ok ? {
-          reward: prResult.reward,
-          tier: prResult.tier,
-          github_number: prResult.github_number,
-          wallet: resident.wallet,
-        } : undefined);
-        break;
-      }
-
-      case 'list_claims': {
-        if (resident.currentBuilding !== 'github-guild') {
-          this.sendActionResult(resident, msg, false, 'Must be inside the GitHub Guild');
-          return;
-        }
-        const claims = getClaimsForResident(resident.id);
-        this.sendActionResult(resident, msg, true, `You have ${claims.length} claim(s).`, {
-          claims: claims.map(c => ({
-            type: c.claim_type,
-            number: c.github_number,
-            tier: c.reward_tier,
-            reward: c.reward_amount,
-            claimed_at: c.claimed_at,
-          })),
-          github_username: resident.githubUsername,
-        });
-        break;
-      }
-
       case 'get_referral_link': {
-        if (resident.currentBuilding !== 'tourist-info') {
-          this.sendActionResult(resident, msg, false, 'Must be inside Tourist Information');
+        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'info') {
+          const infoBuilding = getBuildingByType('info');
+          this.sendActionResult(resident, msg, false, `Must be inside ${infoBuilding?.name ?? 'Tourist Information'}`);
           return;
         }
         const refStats = getReferralStats(resident.id, REFERRAL_MATURITY_MS);
         this.sendActionResult(resident, msg, true, 'Here is your referral link.', {
-          link: `https://otra.city/quick-start?ref=${resident.passportNo}`,
+          link: `https://${CITY_CONFIG.domain}/quick-start?ref=${resident.passportNo}`,
           stats: refStats,
         });
         break;
       }
 
       case 'claim_referrals': {
-        if (resident.currentBuilding !== 'tourist-info') {
-          this.sendActionResult(resident, msg, false, 'Must be inside Tourist Information');
+        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'info') {
+          const infoBuilding = getBuildingByType('info');
+          this.sendActionResult(resident, msg, false, `Must be inside ${infoBuilding?.name ?? 'Tourist Information'}`);
           return;
         }
         const claimable = getClaimableReferrals(resident.id, REFERRAL_MATURITY_MS);
@@ -1601,7 +1500,7 @@ export class WsServer {
         const ids = claimable.map(r => r.id);
         const result = claimReferrals(ids, Date.now());
         resident.wallet += result.total;
-        logEvent('referral_claimed', resident.id, null, 'tourist-info', resident.x, resident.y, {
+        logEvent('referral_claimed', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
           count: result.count,
           total: result.total,
           wallet: resident.wallet,
@@ -1611,7 +1510,7 @@ export class WsServer {
           total: result.total,
           wallet: resident.wallet,
         });
-        resident.pendingNotifications.push(`Claimed ${result.count} referral reward${result.count !== 1 ? 's' : ''} — earned Ɋ${result.total}!`);
+        resident.pendingNotifications.push(`Claimed ${result.count} referral reward${result.count !== 1 ? 's' : ''} — earned ${CITY_CONFIG.currencySymbol}${result.total}!`);
         this.sendActionResult(resident, msg, true, `Claimed ${result.count} referral(s).`, {
           claimed_count: result.count,
           reward_total: result.total,

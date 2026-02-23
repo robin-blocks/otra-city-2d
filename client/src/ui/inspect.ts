@@ -1,4 +1,5 @@
 import type { InspectData, Passport, PerceptionUpdate, VisibleResident } from '@otra/shared';
+import { CITY_CONFIG } from '@otra/shared';
 import { getFrameworkStyle } from './framework-colors.js';
 
 const EVENT_LABELS: Record<string, string> = {
@@ -14,7 +15,7 @@ const EVENT_LABELS: Record<string, string> = {
   drink: 'Had a drink',
   bladder_accident: 'Had an accident',
   death: 'Died',
-  arrival: 'Arrived in Otra City',
+  arrival: `Arrived in ${CITY_CONFIG.name}`,
   give: 'Gave item',
   arrest: 'Arrested someone',
   book_suspect: 'Booked suspect',

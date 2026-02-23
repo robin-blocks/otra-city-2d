@@ -3,7 +3,7 @@
  * Generates a 100x100 tile map with a city core, wilderness ring, and forageable resources.
  * Output: server/data/map.json
  */
-import { TileType, type MapData, type BuildingPlacement, type ForageableNode } from '@otra/shared';
+import { TileType, type MapData, type BuildingPlacement, type ForageableNode, CITY_CONFIG } from '@otra/shared';
 import { BERRY_BUSH_MAX_USES, SPRING_MAX_USES } from '@otra/shared';
 import { writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -67,6 +67,12 @@ function placeBuilding(
   return { interiorGround, interiorObstacles };
 }
 
+/** Look up building config by type, falling back to provided defaults */
+function getBuildingMeta(type: string): { id: string; name: string; type: string } {
+  const cfg = CITY_CONFIG.buildings.find(b => b.type === type);
+  return cfg ? { id: cfg.id, name: cfg.name, type: cfg.type } : { id: type, name: type, type };
+}
+
 function generateMap(): MapData {
   const ground = createGrid(W, H, TileType.GRASS);
   const obstacles = createGrid(W, H, 0);
@@ -96,12 +102,13 @@ function generateMap(): MapData {
   const buildings: BuildingPlacement[] = [];
 
   // 1. Train Station — top center of city core, south of tracks
+  const stationMeta = getBuildingMeta('station');
   const trainStation = { x: CX + 26, y: CY + 4, w: 10, h: 6, doorSide: 'south' as const, doorOffset: 5 };
   const tsInterior = placeBuilding(ground, obstacles, trainStation);
   fillRect(ground, CX + 26, CY + 3, 10, 1, TileType.PLATFORM);
   fillRect(obstacles, CX + 26, CY + 3, 10, 1, 0);
   buildings.push({
-    id: 'train-station', name: 'Train Station', type: 'station',
+    id: stationMeta.id, name: stationMeta.name, type: stationMeta.type,
     tileX: trainStation.x, tileY: trainStation.y,
     widthTiles: trainStation.w, heightTiles: trainStation.h,
     doors: [{ tileX: trainStation.x + 5, tileY: trainStation.y + trainStation.h - 1, facing: 'south' }],
@@ -110,11 +117,12 @@ function generateMap(): MapData {
     interiorObstacles: tsInterior.interiorObstacles,
   });
 
-  // 2. Otra City Bank
+  // 2. Bank
+  const bankMeta = getBuildingMeta('bank');
   const bank = { x: CX + 20, y: CY + 24, w: 8, h: 6, doorSide: 'south' as const, doorOffset: 4 };
   const bankInterior = placeBuilding(ground, obstacles, bank);
   buildings.push({
-    id: 'bank', name: 'Otra City Bank', type: 'bank',
+    id: bankMeta.id, name: bankMeta.name, type: bankMeta.type,
     tileX: bank.x, tileY: bank.y,
     widthTiles: bank.w, heightTiles: bank.h,
     doors: [{ tileX: bank.x + 4, tileY: bank.y + bank.h - 1, facing: 'south' }],
@@ -123,11 +131,12 @@ function generateMap(): MapData {
     interiorObstacles: bankInterior.interiorObstacles,
   });
 
-  // 3. Council Supplies
+  // 3. Shop
+  const shopMeta = getBuildingMeta('shop');
   const shop = { x: CX + 33, y: CY + 24, w: 8, h: 6, doorSide: 'south' as const, doorOffset: 3 };
   const shopInterior = placeBuilding(ground, obstacles, shop);
   buildings.push({
-    id: 'council-supplies', name: 'Council Supplies', type: 'shop',
+    id: shopMeta.id, name: shopMeta.name, type: shopMeta.type,
     tileX: shop.x, tileY: shop.y,
     widthTiles: shop.w, heightTiles: shop.h,
     doors: [{ tileX: shop.x + 3, tileY: shop.y + shop.h - 1, facing: 'south' }],
@@ -136,11 +145,12 @@ function generateMap(): MapData {
     interiorObstacles: shopInterior.interiorObstacles,
   });
 
-  // 4. Council Hall
+  // 4. Hall
+  const hallMeta = getBuildingMeta('hall');
   const hall = { x: CX + 24, y: CY + 33, w: 10, h: 8, doorSide: 'north' as const, doorOffset: 5 };
   const hallInterior = placeBuilding(ground, obstacles, hall);
   buildings.push({
-    id: 'council-hall', name: 'Council Hall', type: 'hall',
+    id: hallMeta.id, name: hallMeta.name, type: hallMeta.type,
     tileX: hall.x, tileY: hall.y,
     widthTiles: hall.w, heightTiles: hall.h,
     doors: [{ tileX: hall.x + 5, tileY: hall.y, facing: 'north' }],
@@ -152,11 +162,12 @@ function generateMap(): MapData {
     interiorObstacles: hallInterior.interiorObstacles,
   });
 
-  // 5. Council Toilet
+  // 5. Toilet
+  const toiletMeta = getBuildingMeta('toilet');
   const toilet = { x: CX + 36, y: CY + 33, w: 5, h: 4, doorSide: 'north' as const, doorOffset: 2 };
   const toiletInterior = placeBuilding(ground, obstacles, toilet);
   buildings.push({
-    id: 'council-toilet', name: 'Council Toilet', type: 'toilet',
+    id: toiletMeta.id, name: toiletMeta.name, type: toiletMeta.type,
     tileX: toilet.x, tileY: toilet.y,
     widthTiles: toilet.w, heightTiles: toilet.h,
     doors: [{ tileX: toilet.x + 2, tileY: toilet.y, facing: 'north' }],
@@ -165,11 +176,12 @@ function generateMap(): MapData {
     interiorObstacles: toiletInterior.interiorObstacles,
   });
 
-  // 6. Council Mortuary
+  // 6. Mortuary
+  const mortuaryMeta = getBuildingMeta('mortuary');
   const mortuary = { x: CX + 48, y: CY + 44, w: 7, h: 5, doorSide: 'west' as const, doorOffset: 2 };
   const mortuaryInterior = placeBuilding(ground, obstacles, mortuary);
   buildings.push({
-    id: 'council-mortuary', name: 'Council Mortuary', type: 'mortuary',
+    id: mortuaryMeta.id, name: mortuaryMeta.name, type: mortuaryMeta.type,
     tileX: mortuary.x, tileY: mortuary.y,
     widthTiles: mortuary.w, heightTiles: mortuary.h,
     doors: [{ tileX: mortuary.x, tileY: mortuary.y + 2, facing: 'west' }],
@@ -179,10 +191,11 @@ function generateMap(): MapData {
   });
 
   // 7. Police Station
+  const policeMeta = getBuildingMeta('police');
   const policeStation = { x: CX + 8, y: CY + 33, w: 8, h: 6, doorSide: 'east' as const, doorOffset: 3 };
   const psInterior = placeBuilding(ground, obstacles, policeStation);
   buildings.push({
-    id: 'police-station', name: 'Police Station', type: 'police',
+    id: policeMeta.id, name: policeMeta.name, type: policeMeta.type,
     tileX: policeStation.x, tileY: policeStation.y,
     widthTiles: policeStation.w, heightTiles: policeStation.h,
     doors: [{ tileX: policeStation.x + policeStation.w - 1, tileY: policeStation.y + 3, facing: 'east' }],
@@ -191,27 +204,12 @@ function generateMap(): MapData {
     interiorObstacles: psInterior.interiorObstacles,
   });
 
-  // 8. GitHub Guild
-  const guild = { x: CX + 10, y: CY + 24, w: 8, h: 6, doorSide: 'south' as const, doorOffset: 4 };
-  const guildInterior = placeBuilding(ground, obstacles, guild);
-  buildings.push({
-    id: 'github-guild', name: 'GitHub Guild', type: 'guild',
-    tileX: guild.x, tileY: guild.y,
-    widthTiles: guild.w, heightTiles: guild.h,
-    doors: [{ tileX: guild.x + 4, tileY: guild.y + guild.h - 1, facing: 'south' }],
-    interactionZones: [
-      { x: 1, y: 1, width: 2, height: 1, action: 'claim_issue' },
-      { x: 4, y: 1, width: 2, height: 1, action: 'claim_pr' },
-    ],
-    interiorGround: guildInterior.interiorGround,
-    interiorObstacles: guildInterior.interiorObstacles,
-  });
-
-  // 9. Tourist Information
+  // 8. Tourist Information
+  const infoMeta = getBuildingMeta('info');
   const touristInfo = { x: CX + 17, y: CY + 4, w: 7, h: 5, doorSide: 'south' as const, doorOffset: 3 };
   const tiInterior = placeBuilding(ground, obstacles, touristInfo);
   buildings.push({
-    id: 'tourist-info', name: 'Tourist Information', type: 'info',
+    id: infoMeta.id, name: infoMeta.name, type: infoMeta.type,
     tileX: touristInfo.x, tileY: touristInfo.y,
     widthTiles: touristInfo.w, heightTiles: touristInfo.h,
     doors: [{ tileX: touristInfo.x + 3, tileY: touristInfo.y + touristInfo.h - 1, facing: 'south' }],

@@ -1,14 +1,17 @@
 import { getDb } from './database.js';
 import { v4 as uuid } from 'uuid';
 import type { Passport, Needs } from '@otra/shared';
+import { CITY_CONFIG } from '@otra/shared';
 
 function nextPassportNo(): string {
   const db = getDb();
+  const prefix = `${CITY_CONFIG.passportPrefix}-`;
+  const prefixLen = prefix.length + 1; // +1 for 1-based SUBSTR
   const row = db.prepare(
-    "SELECT MAX(CAST(SUBSTR(passport_no, 4) AS INTEGER)) AS max_num FROM residents"
+    `SELECT MAX(CAST(SUBSTR(passport_no, ${prefixLen}) AS INTEGER)) AS max_num FROM residents`
   ).get() as { max_num: number | null };
   const next = (row.max_num ?? 0) + 1;
-  return `OC-${String(next).padStart(7, '0')}`;
+  return `${prefix}${String(next).padStart(7, '0')}`;
 }
 
 export interface CreateResidentParams {

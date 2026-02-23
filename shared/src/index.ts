@@ -1,3 +1,4 @@
+export * from './city-config.js';
 export * from './constants.js';
 export * from './types/resident.js';
 export * from './types/map.js';

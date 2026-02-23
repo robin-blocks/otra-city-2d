@@ -1,3 +1,5 @@
+import { CITY_CONFIG } from '@otra/shared';
+
 interface BuildingData {
   name: string;
   items?: Array<{ name: string; price: number; stock: number; description: string }>;
@@ -12,11 +14,7 @@ interface BuildingData {
   arrest_bounty?: number;
   current_prisoners?: number;
   wanted_count?: number;
-  // GitHub Guild
   description?: string;
-  repo?: string;
-  rewards?: { issue: number; pr_easy: number; pr_medium: number; pr_hard: number };
-  recent_claims?: Array<{ github_username: string; type: string; number: number; tier: string; reward: number; claimed_at: number }>;
   total_distributed?: number;
   // Tourist Information
   reward_per_referral?: number;
@@ -101,32 +99,30 @@ export class BuildingInfoUI {
       </div>
     `;
 
-    switch (buildingId) {
-      case 'council-supplies':
+    const buildingType = CITY_CONFIG.buildings.find(b => b.id === buildingId)?.type;
+    switch (buildingType) {
+      case 'shop':
         html += this.renderShop(data);
         break;
-      case 'council-hall':
+      case 'hall':
         html += this.renderCouncilHall(data);
         break;
       case 'bank':
         html += this.renderBank(data);
         break;
-      case 'council-toilet':
+      case 'toilet':
         html += this.renderToilet();
         break;
-      case 'train-station':
+      case 'station':
         html += this.renderTrainStation(data);
         break;
-      case 'council-mortuary':
+      case 'mortuary':
         html += this.renderMortuary(data);
         break;
-      case 'police-station':
+      case 'police':
         html += this.renderPoliceStation(data);
         break;
-      case 'github-guild':
-        html += this.renderGithubGuild(data);
-        break;
-      case 'tourist-info':
+      case 'info':
         html += this.renderTouristInfo(data);
         break;
       default:
@@ -148,7 +144,7 @@ export class BuildingInfoUI {
         <div class="building-item">
           <div class="building-item-row">
             <span class="building-item-name">${this.esc(item.name)}</span>
-            <span class="building-item-price">Ɋ${item.price}</span>
+            <span class="building-item-price">${CITY_CONFIG.currencySymbol}${item.price}</span>
           </div>
           <div class="building-item-row">
             <span class="building-item-detail">${this.esc(item.description)}</span>
@@ -163,7 +159,7 @@ export class BuildingInfoUI {
     let html = '';
 
     // Council Hall description
-    html += '<div class="building-item-detail" style="margin-bottom:12px;">The heart of civic life in Otra City. Write petitions to suggest changes, vote on others\' ideas, and apply for jobs. <strong style="color:#3c6;">Writing and voting are completely free.</strong></div>';
+    html += '<div class="building-item-detail" style="margin-bottom:12px;">The heart of civic life. Write petitions to suggest changes, vote on others\' ideas, and apply for jobs. <strong style="color:#3c6;">Writing and voting are completely free.</strong></div>';
 
     // Petitions
     html += '<div class="building-section-title">PETITIONS — HAVE YOUR SAY</div>';
@@ -196,7 +192,7 @@ export class BuildingInfoUI {
           <div class="building-item">
             <div class="building-item-row">
               <span class="building-item-name">${this.esc(j.title)}</span>
-              <span class="building-item-price">Ɋ${j.wage}/shift</span>
+              <span class="building-item-price">${CITY_CONFIG.currencySymbol}${j.wage}/shift</span>
             </div>
             <div class="building-item-row">
               <span class="building-item-detail">${j.shift_hours}h shifts</span>
@@ -238,7 +234,7 @@ export class BuildingInfoUI {
     const bodyCount = data.uncollected_bodies ?? 0;
     const bodyColor = bodyCount > 0 ? '#c66' : '#3c6';
     return `
-      <div class="building-stat"><span class="building-stat-label">Bounty per body:</span> <span class="building-stat-value">Ɋ${data.bounty_per_body ?? 5}</span></div>
+      <div class="building-stat"><span class="building-stat-label">Bounty per body:</span> <span class="building-stat-value">${CITY_CONFIG.currencySymbol}${data.bounty_per_body ?? 5}</span></div>
       <div class="building-stat"><span class="building-stat-label">Uncollected bodies:</span> <span class="building-stat-value" style="color:${bodyColor}">${bodyCount}</span></div>
       <div class="building-item-detail" style="margin-top:8px;">Collect bodies from the streets and process them here for a reward.</div>
     `;
@@ -269,80 +265,11 @@ export class BuildingInfoUI {
     // Stats
     html += '<div class="building-section-title">STATS</div>';
     html += `
-      <div class="building-stat"><span class="building-stat-label">Bounty per arrest:</span> <span class="building-stat-value">Ɋ${data.arrest_bounty ?? 10}</span></div>
+      <div class="building-stat"><span class="building-stat-label">Bounty per arrest:</span> <span class="building-stat-value">${CITY_CONFIG.currencySymbol}${data.arrest_bounty ?? 10}</span></div>
       <div class="building-stat"><span class="building-stat-label">Current prisoners:</span> <span class="building-stat-value">${data.current_prisoners ?? 0}</span></div>
       <div class="building-stat"><span class="building-stat-label">Wanted residents:</span> <span class="building-stat-value" style="color:${(data.wanted_count ?? 0) > 0 ? '#c66' : '#3c6'}">${data.wanted_count ?? 0}</span></div>
     `;
     html += '<div class="building-item-detail" style="margin-top:8px;">Police officers earn Ɋ10 per booking plus shift wages. Apply at Council Hall.</div>';
-
-    return html;
-  }
-
-  private renderGithubGuild(data: BuildingData): string {
-    let html = '';
-
-    if (data.description) {
-      html += `<div class="building-item-detail" style="margin-bottom:12px;">${this.esc(data.description)}</div>`;
-    }
-
-    if (data.repo) {
-      html += `<div class="building-stat"><span class="building-stat-label">Repository:</span> <span class="building-stat-value"><a href="https://github.com/${this.esc(data.repo)}" target="_blank" style="color:#5c9;">${this.esc(data.repo)}</a></span></div>`;
-    }
-
-    // Reward tiers
-    html += '<div class="building-section-title">REWARD TIERS</div>';
-    if (data.rewards) {
-      html += `
-        <div class="building-item">
-          <div class="building-item-row">
-            <span class="building-item-name">Issue (reward:issue)</span>
-            <span class="building-item-price">Ɋ${data.rewards.issue}</span>
-          </div>
-        </div>
-        <div class="building-item">
-          <div class="building-item-row">
-            <span class="building-item-name">PR Easy (reward:easy)</span>
-            <span class="building-item-price">Ɋ${data.rewards.pr_easy}</span>
-          </div>
-        </div>
-        <div class="building-item">
-          <div class="building-item-row">
-            <span class="building-item-name">PR Medium (reward:medium)</span>
-            <span class="building-item-price">Ɋ${data.rewards.pr_medium}</span>
-          </div>
-        </div>
-        <div class="building-item">
-          <div class="building-item-row">
-            <span class="building-item-name">PR Hard (reward:hard)</span>
-            <span class="building-item-price">Ɋ${data.rewards.pr_hard}</span>
-          </div>
-        </div>`;
-    }
-
-    // Total distributed
-    if (data.total_distributed !== undefined) {
-      html += `<div class="building-stat" style="margin-top:8px;"><span class="building-stat-label">Total distributed:</span> <span class="building-stat-value">Ɋ${data.total_distributed}</span></div>`;
-    }
-
-    // Recent claims
-    html += '<div class="building-section-title">RECENT CLAIMS</div>';
-    if (!data.recent_claims || data.recent_claims.length === 0) {
-      html += '<div class="building-empty">No claims yet. Be the first!</div>';
-    } else {
-      for (const c of data.recent_claims) {
-        const typeLabel = c.type === 'pr' ? `PR #${c.number}` : `Issue #${c.number}`;
-        html += `
-          <div class="building-item">
-            <div class="building-item-row">
-              <span class="building-item-name">${this.esc(c.github_username)}</span>
-              <span class="building-item-price">+Ɋ${c.reward}</span>
-            </div>
-            <div class="building-item-row">
-              <span class="building-item-detail">${typeLabel} (${this.esc(c.tier)})</span>
-            </div>
-          </div>`;
-      }
-    }
 
     return html;
   }
@@ -354,10 +281,10 @@ export class BuildingInfoUI {
       html += `<div class="building-item-detail" style="margin-bottom:12px;">${this.esc(data.description)}</div>`;
     }
 
-    html += `<div class="building-stat"><span class="building-stat-label">Reward per referral:</span> <span class="building-stat-value">Ɋ${data.reward_per_referral ?? 5}</span></div>`;
+    html += `<div class="building-stat"><span class="building-stat-label">Reward per referral:</span> <span class="building-stat-value">${CITY_CONFIG.currencySymbol}${data.reward_per_referral ?? 5}</span></div>`;
 
     if (data.total_distributed !== undefined) {
-      html += `<div class="building-stat"><span class="building-stat-label">Total distributed:</span> <span class="building-stat-value">Ɋ${data.total_distributed}</span></div>`;
+      html += `<div class="building-stat"><span class="building-stat-label">Total distributed:</span> <span class="building-stat-value">${CITY_CONFIG.currencySymbol}${data.total_distributed}</span></div>`;
     }
 
     html += '<div class="building-section-title">RECENT REFERRALS</div>';
@@ -369,7 +296,7 @@ export class BuildingInfoUI {
           <div class="building-item">
             <div class="building-item-row">
               <span class="building-item-name">${this.esc(r.referrer)}</span>
-              <span class="building-item-price">+Ɋ${r.reward}</span>
+              <span class="building-item-price">+${CITY_CONFIG.currencySymbol}${r.reward}</span>
             </div>
             <div class="building-item-row">
               <span class="building-item-detail">Referred ${this.esc(r.referred)}</span>

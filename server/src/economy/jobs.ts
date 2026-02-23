@@ -49,7 +49,7 @@ export function applyForJob(resident: ResidentEntity, jobId: string): ApplyJobRe
   resident.currentJobId = jobId;
   resident.shiftStartTime = null;
 
-  logEvent('apply_job', resident.id, null, 'council-hall', resident.x, resident.y, {
+  logEvent('apply_job', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
     job_id: jobId, job_title: job.title,
   });
 

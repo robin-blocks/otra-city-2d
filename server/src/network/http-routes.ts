@@ -11,12 +11,14 @@ import { listAvailableJobs } from '../economy/jobs.js';
 import { type World, computeCondition } from '../simulation/world.js';
 import type { PassportRegistration, PassportResponse, InspectData } from '@otra/shared';
 import {
+  CITY_CONFIG, renderMessage,
   TRAIN_INTERVAL_SEC, UBI_AMOUNT, BODY_BOUNTY, ARREST_BOUNTY,
   BERRY_BUSH_MAX_USES, BERRY_BUSH_REGROW_GAME_HOURS,
   SPRING_MAX_USES, SPRING_REGROW_GAME_HOURS,
   GITHUB_REPO, GITHUB_ISSUE_REWARD, GITHUB_PR_EASY_REWARD, GITHUB_PR_MEDIUM_REWARD, GITHUB_PR_HARD_REWARD,
   REFERRAL_REWARD, REFERRAL_DEFAULT_CAP,
 } from '@otra/shared';
+import { getBuildingConfig, getBuildingByType, getBuildingsByType } from '../buildings/building-registry.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -235,14 +237,27 @@ export function handleHttpRequest(
     const uncollectedBodies = Array.from(world.residents.values())
       .filter(r => r.isDead).length;
 
-    const buildings: Record<string, unknown> = {
-      'council-supplies': {
-        name: 'Council Supplies',
+    const shopConfig = getBuildingByType('shop');
+    const hallConfig = getBuildingByType('hall');
+    const bankConfig = getBuildingByType('bank');
+    const toiletConfig = getBuildingByType('toilet');
+    const stationConfig = getBuildingByType('station');
+    const mortuaryConfig = getBuildingByType('mortuary');
+    const policeConfig = getBuildingByType('police');
+    const infoConfig = getBuildingByType('info');
+
+    const buildings: Record<string, unknown> = {};
+
+    if (shopConfig) {
+      buildings[shopConfig.id] = {
+        name: shopConfig.name,
         items: catalog.map(i => ({ name: i.name, price: i.price, stock: i.stock, description: i.description })),
-      },
-      'council-hall': {
-        name: 'Council Hall',
-        description: 'The heart of civic life in Otra City. Write petitions to suggest changes, vote on others\' ideas, and apply for jobs. Writing and voting are completely free.',
+      };
+    }
+    if (hallConfig) {
+      buildings[hallConfig.id] = {
+        name: hallConfig.name,
+        description: `The heart of civic life in ${CITY_CONFIG.name}. Write petitions to suggest changes, vote on others' ideas, and apply for jobs. Writing and voting are completely free.`,
         petitions: petitions.map(p => ({
           category: p.category, description: p.description,
           votes_for: p.votes_for, votes_against: p.votes_against,
@@ -251,55 +266,47 @@ export function handleHttpRequest(
           title: j.title, wage: j.wage, shift_hours: j.shift_hours,
           openings: j.openings, description: j.description,
         })),
-      },
-      'bank': {
-        name: 'Otra City Bank',
+      };
+    }
+    if (bankConfig) {
+      buildings[bankConfig.id] = {
+        name: bankConfig.name,
         ubi_amount: UBI_AMOUNT,
         ubi_status: UBI_AMOUNT === 0 ? 'discontinued' : 'active',
         ubi_cooldown_hours: 24,
         alive_residents: Array.from(world.residents.values()).filter(r => !r.isDead).length,
-      },
-      'council-toilet': { name: 'Council Toilet' },
-      'train-station': {
-        name: 'Train Station',
+      };
+    }
+    if (toiletConfig) {
+      buildings[toiletConfig.id] = { name: toiletConfig.name };
+    }
+    if (stationConfig) {
+      buildings[stationConfig.id] = {
+        name: stationConfig.name,
         next_train_seconds: Math.round(nextTrain),
         queue_size: world.trainQueue.length,
-      },
-      'council-mortuary': {
-        name: 'Council Mortuary',
+      };
+    }
+    if (mortuaryConfig) {
+      buildings[mortuaryConfig.id] = {
+        name: mortuaryConfig.name,
         bounty_per_body: BODY_BOUNTY,
         uncollected_bodies: uncollectedBodies,
-      },
-      'police-station': {
-        name: 'Police Station',
+      };
+    }
+    if (policeConfig) {
+      buildings[policeConfig.id] = {
+        name: policeConfig.name,
         laws: getLaws().map(l => ({ name: l.name, description: l.description, sentence_hours: l.sentence_game_hours })),
         arrest_bounty: ARREST_BOUNTY,
         current_prisoners: Array.from(world.residents.values()).filter(r => r.prisonSentenceEnd !== null && !r.isDead).length,
         wanted_count: Array.from(world.residents.values()).filter(r => r.lawBreaking.length > 0 && !r.isDead).length,
-      },
-      'github-guild': {
-        name: 'GitHub Guild',
-        description: 'Link your GitHub and claim QUID for contributing to Otra City.',
-        repo: GITHUB_REPO,
-        rewards: {
-          issue: GITHUB_ISSUE_REWARD,
-          pr_easy: GITHUB_PR_EASY_REWARD,
-          pr_medium: GITHUB_PR_MEDIUM_REWARD,
-          pr_hard: GITHUB_PR_HARD_REWARD,
-        },
-        recent_claims: getRecentGithubClaims(5).map(c => ({
-          github_username: c.github_username,
-          type: c.claim_type,
-          number: c.github_number,
-          tier: c.reward_tier,
-          reward: c.reward_amount,
-          claimed_at: c.claimed_at,
-        })),
-        total_distributed: getTotalGithubRewards(),
-      },
-      'tourist-info': {
-        name: 'Tourist Information',
-        description: 'Share your referral link to invite new residents. Earn Ɋ5 for each referral once they survive 1 day.',
+      };
+    }
+    if (infoConfig) {
+      buildings[infoConfig.id] = {
+        name: infoConfig.name,
+        description: `Share your referral link to invite new residents. Earn ${CITY_CONFIG.currencySymbol}${REFERRAL_REWARD} for each referral once they survive 1 day.`,
         reward_per_referral: REFERRAL_REWARD,
         recent_referrals: getRecentReferrals(5).map(r => ({
           referrer: r.referrer_name,
@@ -308,22 +315,22 @@ export function handleHttpRequest(
           claimed_at: r.claimed_at,
         })),
         total_distributed: getTotalReferralRewards(),
+      };
+    }
+    buildings['foraging'] = {
+      name: 'Wild Resources',
+      description: 'Forageable resource nodes scattered in the wilderness around the city. Harvest berries and spring water for free to survive.',
+      berry_bushes: {
+        count: Array.from(world.forageableNodes.values()).filter(n => n.type === 'berry_bush').length,
+        max_uses: BERRY_BUSH_MAX_USES,
+        regrow_game_hours: BERRY_BUSH_REGROW_GAME_HOURS,
+        item: { name: 'Wild Berries', hunger_restore: 12, thirst_restore: 5 },
       },
-      'foraging': {
-        name: 'Wild Resources',
-        description: 'Forageable resource nodes scattered in the wilderness around the city. Harvest berries and spring water for free to survive.',
-        berry_bushes: {
-          count: Array.from(world.forageableNodes.values()).filter(n => n.type === 'berry_bush').length,
-          max_uses: BERRY_BUSH_MAX_USES,
-          regrow_game_hours: BERRY_BUSH_REGROW_GAME_HOURS,
-          item: { name: 'Wild Berries', hunger_restore: 12, thirst_restore: 5 },
-        },
-        fresh_springs: {
-          count: Array.from(world.forageableNodes.values()).filter(n => n.type === 'fresh_spring').length,
-          max_uses: SPRING_MAX_USES,
-          regrow_game_hours: SPRING_REGROW_GAME_HOURS,
-          item: { name: 'Spring Water', hunger_restore: 3, thirst_restore: 8 },
-        },
+      fresh_springs: {
+        count: Array.from(world.forageableNodes.values()).filter(n => n.type === 'fresh_spring').length,
+        max_uses: SPRING_MAX_USES,
+        regrow_game_hours: SPRING_REGROW_GAME_HOURS,
+        item: { name: 'Spring Water', hunger_restore: 3, thirst_restore: 8 },
       },
     };
 
@@ -477,7 +484,7 @@ function handlePassportRegistration(
           preferred_name: row.preferred_name,
         },
         token,
-        message: `Welcome to Otra City! You are queued for the next train. Your passport number is ${row.passport_no}. You arrive hungry and with little money. Explore the wilderness to forage for food and water to survive. Visit the Council Hall to write free petitions and vote on ideas that shape the city.`,
+        message: renderMessage(CITY_CONFIG.messages.welcomeOnRegister, { passport_no: row.passport_no }),
       };
 
       res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -533,9 +540,9 @@ function formatFeedEvent(
 
   switch (type) {
     case 'arrival':
-      return `${actor} arrived in Otra City`;
+      return renderMessage(CITY_CONFIG.messages.arrival, { actor });
     case 'depart':
-      return `${actor} departed Otra City`;
+      return renderMessage(CITY_CONFIG.messages.departure, { actor });
     case 'death': {
       const cause = data.cause ? ` from ${data.cause}` : '';
       return `${actor} died${cause}`;

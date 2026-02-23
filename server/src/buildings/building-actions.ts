@@ -1,12 +1,21 @@
-import { TILE_SIZE, ENERGY_COST_USE_TOILET, REFERRAL_REWARD, REFERRAL_MATURITY_MS } from '@otra/shared';
+import { TILE_SIZE, ENERGY_COST_USE_TOILET, REFERRAL_REWARD, REFERRAL_MATURITY_MS, AGENT_SEPARATION_DIST, CITY_CONFIG, renderMessage } from '@otra/shared';
 import type { ResidentEntity } from '../simulation/world.js';
 import type { World } from '../simulation/world.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
 import { getOpenPetitions, getReferralStats } from '../db/queries.js';
+import { getBuildingType } from './building-registry.js';
 
 export interface BuildingActionResult {
   success: boolean;
   message: string;
+}
+
+function countBuildingOccupants(buildingId: string, world: World): number {
+  let count = 0;
+  for (const [, r] of world.residents) {
+    if (!r.isDead && r.currentBuilding === buildingId) count++;
+  }
+  return count;
 }
 
 export function enterBuilding(
@@ -43,18 +52,27 @@ export function enterBuilding(
     return { success: false, message: 'Too far from door' };
   }
 
-  // Enter the building — place resident at center of building interior
+  // Enter the building — place resident near center, offset from other occupants
+  const occupantCount = countBuildingOccupants(buildingId, world);
   resident.currentBuilding = buildingId;
   const centerX = (building.tileX + building.widthTiles / 2) * TILE_SIZE;
   const centerY = (building.tileY + building.heightTiles / 2) * TILE_SIZE;
-  resident.x = centerX;
-  resident.y = centerY;
+  if (occupantCount > 0) {
+    const angle = (occupantCount * 2 * Math.PI) / Math.max(occupantCount + 1, 6);
+    resident.x = centerX + Math.cos(angle) * AGENT_SEPARATION_DIST;
+    resident.y = centerY + Math.sin(angle) * AGENT_SEPARATION_DIST;
+  } else {
+    resident.x = centerX;
+    resident.y = centerY;
+  }
   resident.velocityX = 0;
   resident.velocityY = 0;
   resident.speed = 'stop';
 
-  // Stock notification when entering Council Supplies
-  if (buildingId === 'council-supplies') {
+  // Type-based welcome notifications
+  const buildingType = getBuildingType(buildingId);
+
+  if (buildingType === 'shop') {
     const catalog = getShopCatalogWithStock();
     const stockSummary = catalog
       .map(item => `${item.name} (${item.stock > 0 ? item.stock : 'out'})`)
@@ -62,38 +80,30 @@ export function enterBuilding(
     resident.pendingNotifications.push(`Shop stock: ${stockSummary}`);
   }
 
-  // Council Hall welcome notification — encourage civic participation
-  if (buildingId === 'council-hall') {
+  if (buildingType === 'hall') {
     const petitions = getOpenPetitions();
     const petitionCount = petitions.length;
     if (petitionCount > 0) {
       resident.pendingNotifications.push(
-        `Welcome to the Council Hall! There ${petitionCount === 1 ? 'is' : 'are'} ${petitionCount} open petition${petitionCount !== 1 ? 's' : ''} awaiting your vote. Writing and voting are completely free.`
+        renderMessage(CITY_CONFIG.messages.councilHallWelcome, {
+          petition_count: petitionCount,
+          petition_count_verb: petitionCount === 1 ? 'is' : 'are',
+          petition_plural: petitionCount !== 1 ? 's' : '',
+        })
       );
     } else {
       resident.pendingNotifications.push(
-        'Welcome to the Council Hall! No open petitions right now. Be the first to write one — it\'s completely free. Share your ideas to help shape Otra City.'
+        renderMessage(CITY_CONFIG.messages.councilHallWelcomeNoPetitions)
       );
     }
   }
 
-  // GitHub Guild welcome notification
-  if (buildingId === 'github-guild') {
-    if (!resident.githubUsername) {
-      resident.pendingNotifications.push(
-        'Welcome to the GitHub Guild! Link your GitHub account with link_github. First, include your passport number in any issue, PR, or comment on robin-blocks/otra-city-2d.'
-      );
-    } else {
-      resident.pendingNotifications.push(
-        `Welcome back, ${resident.githubUsername}! Claim rewards for merged PRs (claim_pr) and accepted issues (claim_issue).`
-      );
-    }
-  }
-
-  // Tourist Information welcome notification
-  if (buildingId === 'tourist-info') {
+  if (buildingType === 'info') {
     resident.pendingNotifications.push(
-      `Welcome to Tourist Information! Share your referral link: https://otra.city/quick-start?ref=${resident.passportNo} — earn Ɋ${REFERRAL_REWARD} for each new resident who joins with your code. Referred residents must survive 1 day before you can claim.`
+      renderMessage(CITY_CONFIG.messages.touristInfoWelcome, {
+        passport_no: resident.passportNo,
+        referral_reward: REFERRAL_REWARD,
+      })
     );
     const stats = getReferralStats(resident.id, REFERRAL_MATURITY_MS);
     if (stats.claimable > 0) {
@@ -147,8 +157,8 @@ export function exitBuilding(
 }
 
 export function useToilet(resident: ResidentEntity): BuildingActionResult {
-  if (resident.currentBuilding !== 'council-toilet') {
-    return { success: false, message: 'Must be inside the Council Toilet' };
+  if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'toilet') {
+    return { success: false, message: 'Must be inside a toilet facility' };
   }
   if (resident.isSleeping) {
     return { success: false, message: 'Cannot use toilet while sleeping' };

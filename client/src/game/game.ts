@@ -1,6 +1,6 @@
 import { Application, Container, Graphics } from 'pixi.js';
 import type { MapData, PerceptionUpdate, ResidentState, VisibleResident, VisibleEntity, VisibleForageable, AudibleMessage, Passport, InventoryItem } from '@otra/shared';
-import { WALK_SPEED, RUN_SPEED, QUID_SYMBOL, GAME_DAY_SECONDS, TIME_SCALE } from '@otra/shared';
+import { WALK_SPEED, RUN_SPEED, QUID_SYMBOL, GAME_DAY_SECONDS, TIME_SCALE, CITY_CONFIG } from '@otra/shared';
 import { WsClient } from '../network/ws-client.js';
 import { ActionSender } from '../network/action-sender.js';
 import { MapRenderer } from '../rendering/map-renderer.js';
@@ -804,8 +804,9 @@ export class Game {
     }
 
     if (key === 'b') {
-      // Open shop (must be in council-supplies)
-      if (currentBuilding === 'council-supplies' && interactions.includes('buy')) {
+      // Open shop (must be in a shop-type building)
+      const isShop = currentBuilding && CITY_CONFIG.buildings.some(b => b.id === currentBuilding && b.type === 'shop');
+      if (isShop && interactions.includes('buy')) {
         const wallet = perc?.self.wallet ?? 0;
         this.shopUI.show(wallet);
         if (this.inventoryUI.isVisible()) this.inventoryUI.hide();
