@@ -12,6 +12,7 @@ import {
   updateCarryingSuspect, updatePrisonState,
   getClaimsForResident,
   getReferralStats, getClaimableReferrals, claimReferrals,
+  getReputationStats,
 } from '../db/queries.js';
 import { buyItem, SHOP_CATALOG, getShopItem } from '../economy/shop.js';
 import { collectUbi } from '../economy/ubi.js';
@@ -720,6 +721,8 @@ export class WsServer {
           data: JSON.parse(e.data_json) as Record<string, unknown>,
         }));
 
+        const repStats = getReputationStats(targetId);
+
         const requestId = ('request_id' in msg ? msg.request_id : undefined) || '';
         if (resident.ws) {
           this.send(resident.ws, {
@@ -744,6 +747,12 @@ export class WsServer {
               law_breaking: target.lawBreaking.length > 0 ? target.lawBreaking : undefined,
               is_imprisoned: target.prisonSentenceEnd !== null ? true : undefined,
               recent_events: recentEvents,
+              reputation: repStats ? {
+                economic: repStats.economic,
+                social: repStats.social,
+                civic: repStats.civic,
+                criminal: repStats.criminal,
+              } : undefined,
             },
           });
         }

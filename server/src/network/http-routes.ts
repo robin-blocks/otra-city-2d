@@ -4,7 +4,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { signToken, verifyToken } from '../auth/jwt.js';
 import { v4 as uuidv4 } from 'uuid';
-import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards, getReferralCount, insertReferral, updateReferredBy, getRecentReferrals, getTotalReferralRewards, getConversationTurns, getConversationSummary, getConversationHistory, getConversationPartners, insertFeedback, getRecentFeedback } from '../db/queries.js';
+import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards, getReferralCount, insertReferral, updateReferredBy, getRecentReferrals, getTotalReferralRewards, getConversationTurns, getConversationSummary, getConversationHistory, getConversationPartners, insertFeedback, getRecentFeedback, getReputationStats } from '../db/queries.js';
 import { consumeFeedbackToken } from './feedback.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
 import { listAvailableJobs } from '../economy/jobs.js';
@@ -73,6 +73,13 @@ export function handleHttpRequest(
   if (req.method === 'GET' && url.pathname.startsWith('/api/inspect/')) {
     const id = url.pathname.slice('/api/inspect/'.length);
     handleInspect(res, id, world);
+    return true;
+  }
+
+  // GET /api/reputation/:passport_no — Public reputation profile
+  if (req.method === 'GET' && url.pathname.startsWith('/api/reputation/')) {
+    const passportNo = url.pathname.slice('/api/reputation/'.length);
+    handleReputation(res, passportNo);
     return true;
   }
 
@@ -589,6 +596,32 @@ function handleResidentLookup(res: ServerResponse, passportNo: string): void {
   }));
 }
 
+function handleReputation(res: ServerResponse, passportNo: string): void {
+  const row = getResidentByPassport(passportNo);
+  if (!row) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Resident not found' }));
+    return;
+  }
+
+  const stats = getReputationStats(row.id);
+  if (!stats) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Resident not found' }));
+    return;
+  }
+
+  res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=10' });
+  res.end(JSON.stringify({
+    passport_no: row.passport_no,
+    preferred_name: row.preferred_name,
+    type: row.type,
+    status: row.status,
+    agent_framework: row.agent_framework || null,
+    ...stats,
+  }));
+}
+
 function handleProfileUpdate(
   req: IncomingMessage,
   res: ServerResponse,
@@ -667,6 +700,8 @@ function handleInspect(res: ServerResponse, id: string, world: World): void {
     data: JSON.parse(e.data_json) as Record<string, unknown>,
   }));
 
+  const repStats = getReputationStats(row.id);
+
   const data: InspectData = {
     id: row.id,
     passport_no: row.passport_no,
@@ -690,6 +725,12 @@ function handleInspect(res: ServerResponse, id: string, world: World): void {
     law_breaking: entity && entity.lawBreaking.length > 0 ? entity.lawBreaking : undefined,
     is_imprisoned: entity && entity.prisonSentenceEnd !== null ? true : undefined,
     recent_events: recentEvents,
+    reputation: repStats ? {
+      economic: repStats.economic,
+      social: repStats.social,
+      civic: repStats.civic,
+      criminal: repStats.criminal,
+    } : undefined,
   };
 
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=2' });

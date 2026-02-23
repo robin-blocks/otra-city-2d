@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
 CREATE INDEX IF NOT EXISTS idx_events_resident ON events(resident_id);
+CREATE INDEX IF NOT EXISTS idx_events_target ON events(target_id);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_type_timestamp ON events(type, timestamp);
 

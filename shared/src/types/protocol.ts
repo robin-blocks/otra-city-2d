@@ -106,6 +106,35 @@ export interface InspectData {
     type: string;
     data: Record<string, unknown>;
   }>;
+  reputation?: {
+    economic: {
+      shifts_completed: number;
+      total_earned: number;
+      total_spent: number;
+      trades_given: number;
+      quid_given: number;
+      items_given: number;
+      bodies_processed: number;
+      forages: number;
+      current_wallet: number;
+    };
+    social: {
+      speech_acts: number;
+      unique_partners: number;
+    };
+    civic: {
+      petitions_written: number;
+      votes_cast: number;
+      arrests_made: number;
+      bodies_collected: number;
+      suspects_booked: number;
+    };
+    criminal: {
+      violations: number;
+      times_arrested: number;
+      times_imprisoned: number;
+    };
+  };
 }
 
 export type ServerMessage =

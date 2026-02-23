@@ -211,6 +211,161 @@ export interface EventRow {
   data_json: string;
 }
 
+// === Reputation queries ===
+
+export interface ReputationStats {
+  computed_at: number;
+  identity: {
+    created_at: number;
+    age_hours: number;
+    times_died: number;
+    current_survival_hours: number | null;
+  };
+  economic: {
+    shifts_completed: number;
+    total_earned: number;
+    total_spent: number;
+    trades_given: number;
+    quid_given: number;
+    items_given: number;
+    bodies_processed: number;
+    forages: number;
+    current_wallet: number;
+  };
+  social: {
+    speech_acts: number;
+    unique_partners: number;
+  };
+  civic: {
+    petitions_written: number;
+    votes_cast: number;
+    arrests_made: number;
+    bodies_collected: number;
+    suspects_booked: number;
+  };
+  criminal: {
+    violations: number;
+    times_arrested: number;
+    times_imprisoned: number;
+  };
+}
+
+// In-memory cache for reputation stats (avoid repeated aggregate queries on inspect)
+const REPUTATION_CACHE_TTL_MS = 30_000; // 30 seconds
+const reputationCache = new Map<string, { stats: ReputationStats; expiresAt: number }>();
+
+export function getReputationStats(residentId: string): ReputationStats | null {
+  // Check cache first
+  const cached = reputationCache.get(residentId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.stats;
+  }
+
+  const db = getDb();
+
+  // Get resident row for identity info
+  const resident = db.prepare('SELECT * FROM residents WHERE id = ?').get(residentId) as ResidentRow | undefined;
+  if (!resident) return null;
+
+  const now = Date.now();
+
+  // Query 1: actions the resident took
+  const actions = db.prepare(`
+    SELECT
+      COUNT(CASE WHEN type = 'death' THEN 1 END) AS deaths,
+      COUNT(CASE WHEN type = 'shift_complete' THEN 1 END) AS shifts_completed,
+      COALESCE(SUM(CASE WHEN type = 'shift_complete' THEN CAST(json_extract(data_json, '$.wage') AS INTEGER) ELSE 0 END), 0) AS total_earned,
+      COUNT(CASE WHEN type = 'buy' THEN 1 END) AS purchases,
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN CAST(json_extract(data_json, '$.cost') AS INTEGER) ELSE 0 END), 0) AS total_spent,
+      COUNT(CASE WHEN type = 'trade' THEN 1 END) AS trades_given,
+      COALESCE(SUM(CASE WHEN type = 'trade' THEN CAST(json_extract(data_json, '$.offer_quid') AS INTEGER) ELSE 0 END), 0) AS quid_given,
+      COUNT(CASE WHEN type = 'give' THEN 1 END) AS items_given,
+      COUNT(CASE WHEN type = 'speak' THEN 1 END) AS speech_acts,
+      COUNT(CASE WHEN type = 'write_petition' THEN 1 END) AS petitions_written,
+      COUNT(CASE WHEN type = 'vote_petition' THEN 1 END) AS votes_cast,
+      COUNT(CASE WHEN type = 'collect_body' THEN 1 END) AS bodies_collected,
+      COUNT(CASE WHEN type = 'process_body' THEN 1 END) AS bodies_processed,
+      COUNT(CASE WHEN type = 'arrest' THEN 1 END) AS arrests_made,
+      COUNT(CASE WHEN type = 'book_suspect' THEN 1 END) AS suspects_booked,
+      COUNT(CASE WHEN type = 'law_violation' THEN 1 END) AS violations,
+      COUNT(CASE WHEN type = 'forage' THEN 1 END) AS forages
+    FROM events WHERE resident_id = ?
+  `).get(residentId) as Record<string, number>;
+
+  // Query 2: things done TO the resident
+  const received = db.prepare(`
+    SELECT
+      COUNT(CASE WHEN type = 'arrest' THEN 1 END) AS times_arrested,
+      COUNT(CASE WHEN type = 'book_suspect' THEN 1 END) AS times_imprisoned,
+      COUNT(CASE WHEN type = 'trade' THEN 1 END) AS trades_received,
+      COALESCE(SUM(CASE WHEN type = 'trade' THEN CAST(json_extract(data_json, '$.offer_quid') AS INTEGER) ELSE 0 END), 0) AS quid_received,
+      COUNT(CASE WHEN type = 'give' THEN 1 END) AS gifts_received
+    FROM events WHERE target_id = ?
+  `).get(residentId) as Record<string, number>;
+
+  // Query 3: unique conversation partners
+  const social = db.prepare(`
+    SELECT COUNT(DISTINCT target_id) AS unique_partners
+    FROM events WHERE type = 'speak' AND resident_id = ? AND target_id IS NOT NULL
+  `).get(residentId) as { unique_partners: number };
+
+  // Compute survival time
+  const createdAt = resident.created_at;
+  const ageMs = now - createdAt;
+  const ageHours = Math.round((ageMs / (1000 * 60 * 60)) * 10) / 10;
+
+  let currentSurvivalHours: number | null = null;
+  if (resident.status === 'ALIVE') {
+    currentSurvivalHours = ageHours;
+  } else if (resident.death_time) {
+    // Survival was from creation to death
+    const survivalMs = resident.death_time - createdAt;
+    currentSurvivalHours = Math.round((survivalMs / (1000 * 60 * 60)) * 10) / 10;
+  }
+
+  const stats: ReputationStats = {
+    computed_at: now,
+    identity: {
+      created_at: createdAt,
+      age_hours: ageHours,
+      times_died: actions.deaths,
+      current_survival_hours: currentSurvivalHours,
+    },
+    economic: {
+      shifts_completed: actions.shifts_completed,
+      total_earned: actions.total_earned,
+      total_spent: actions.total_spent,
+      trades_given: actions.trades_given,
+      quid_given: actions.quid_given,
+      items_given: actions.items_given,
+      bodies_processed: actions.bodies_processed,
+      forages: actions.forages,
+      current_wallet: resident.wallet,
+    },
+    social: {
+      speech_acts: actions.speech_acts,
+      unique_partners: social.unique_partners,
+    },
+    civic: {
+      petitions_written: actions.petitions_written,
+      votes_cast: actions.votes_cast,
+      arrests_made: actions.arrests_made,
+      bodies_collected: actions.bodies_collected,
+      suspects_booked: actions.suspects_booked,
+    },
+    criminal: {
+      violations: actions.violations,
+      times_arrested: received.times_arrested,
+      times_imprisoned: received.times_imprisoned,
+    },
+  };
+
+  // Cache the result
+  reputationCache.set(residentId, { stats, expiresAt: now + REPUTATION_CACHE_TTL_MS });
+
+  return stats;
+}
+
 export function getRecentEventsForResident(residentId: string, limit: number = 10): EventRow[] {
   return getDb().prepare(`
     SELECT * FROM events
