@@ -2,13 +2,13 @@ import { getDb } from './database.js';
 import { v4 as uuid } from 'uuid';
 import type { Passport, Needs } from '@otra/shared';
 
-let passportCounter = 0;
-
 function nextPassportNo(): string {
   const db = getDb();
-  const row = db.prepare('SELECT COUNT(*) as count FROM residents').get() as { count: number };
-  passportCounter = row.count + 1;
-  return `OC-${String(passportCounter).padStart(7, '0')}`;
+  const row = db.prepare(
+    "SELECT MAX(CAST(SUBSTR(passport_no, 4) AS INTEGER)) AS max_num FROM residents"
+  ).get() as { max_num: number | null };
+  const next = (row.max_num ?? 0) + 1;
+  return `OC-${String(next).padStart(7, '0')}`;
 }
 
 export interface CreateResidentParams {
