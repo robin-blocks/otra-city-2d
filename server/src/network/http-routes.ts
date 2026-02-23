@@ -95,6 +95,12 @@ export function handleHttpRequest(
     return true;
   }
 
+  // GET /skill — Standalone SKILL.md for OpenClaw agents (raw markdown)
+  if (req.method === 'GET' && (url.pathname === '/skill' || url.pathname === '/skill.md')) {
+    handleSkillMd(res);
+    return true;
+  }
+
   // GET /api/resident-by-id/:id — Public resident lookup by internal ID (for spectator follow)
   if (req.method === 'GET' && url.pathname.startsWith('/api/resident-by-id/')) {
     const id = url.pathname.slice('/api/resident-by-id/'.length);
@@ -503,6 +509,17 @@ function handleDeveloperDocs(res: ServerResponse): void {
   }
   res.writeHead(200, { 'Content-Type': 'text/html' });
   res.end(developerHtmlCache);
+}
+
+let skillMdCache: string | null = null;
+
+function handleSkillMd(res: ServerResponse): void {
+  if (!skillMdCache) {
+    const mdPath = join(__dirname, '..', 'static', 'skill.md');
+    skillMdCache = readFileSync(mdPath, 'utf-8');
+  }
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end(skillMdCache);
 }
 
 function formatFeedEvent(
