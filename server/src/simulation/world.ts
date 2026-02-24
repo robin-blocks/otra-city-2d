@@ -26,8 +26,9 @@ import {
   NEARBY_RESIDENT_COOLDOWN_MS,
   BUILDING_NEARBY_COOLDOWN_MS, BUILDING_NEARBY_RANGE,
   PAIN_THRESHOLDS, PAIN_COOLDOWNS,
-  SPEECH_TURN_TIMEOUT_MS,
+  SPEECH_TURN_TIMEOUT_MS, SPEECH_TTL_TICKS,
   AGENT_SEPARATION_DIST, AGENT_SEPARATION_FORCE,
+  BLADDER_ACCIDENT_FEE, SOCIAL_ONESIDED_RECOVERY_PER_SEC,
 } from '@otra/shared';
 import type { WebSocket } from 'ws';
 import { TileMap } from './map.js';
@@ -100,7 +101,7 @@ export interface ResidentEntity {
   ws: WebSocket | null;
   lastActionTime: number;
   // Speech tracking for perception
-  pendingSpeech: Array<{ text: string; volume: 'whisper' | 'normal' | 'shout'; time: number; directedTo: string | null }>;
+  pendingSpeech: Array<{ id: string; text: string; volume: 'whisper' | 'normal' | 'shout'; time: number; directedTo: string | null; ticksRemaining: number }>;
   // Pathfinding state
   pathWaypoints: Array<{ x: number; y: number }> | null;
   pathIndex: number;
@@ -152,6 +153,9 @@ export interface ResidentEntity {
   thirtyMinuteFeedbackSent: boolean;
   nearDeathFeedbackSent: boolean;
   hadLowHealth: boolean;  // set when health drops below 20, used for near-death milestone
+  // Pending feedback (runtime only) — surfaced in perception so agents can respond via submit_feedback action
+  pendingFeedbackPrompt: string | null;
+  pendingFeedbackToken: string | null;
 }
 
 /** Compute visible condition for a resident based on their needs */
@@ -315,6 +319,8 @@ export class World {
       thirtyMinuteFeedbackSent: Date.now() - row.created_at >= 30 * 60 * 1000,
       nearDeathFeedbackSent: false,
       hadLowHealth: false,
+      pendingFeedbackPrompt: null,
+      pendingFeedbackToken: null,
     };
 
     // On load: if arrested_by is set but no officer is carrying this resident, clear arrest state
@@ -496,10 +502,16 @@ export class World {
       // Bladder fills
       r.needs.bladder = Math.min(100, r.needs.bladder + BLADDER_FILL_PER_SEC * dt);
 
-      // Social need: decays constantly, recovers during mutual conversation
+      const nowMs = Date.now();
+
+      // Social need: decays constantly, recovers during active conversation.
+      // A smaller fallback recovery applies shortly after meaningful one-sided speech
+      // (speech that actually reached someone), preventing pure "speak into void" exploits.
       r.needs.social = Math.max(0, r.needs.social - SOCIAL_DECAY_PER_SEC * dt);
       if (isConversing) {
         r.needs.social = Math.min(100, r.needs.social + SOCIAL_RECOVERY_PER_SEC * dt);
+      } else if (nowMs - r.lastConversationTime < 60_000) {
+        r.needs.social = Math.min(100, r.needs.social + SOCIAL_ONESIDED_RECOVERY_PER_SEC * dt);
       }
 
       // Energy: passive decay or sleep recovery
@@ -580,7 +592,7 @@ export class World {
       }
 
       // === Needs warning webhooks (proactive alerts) ===
-      if (r.webhookUrl && !r.isDead) {
+      if ((r.webhookUrl || r.ws) && !r.isDead) {
         const now = Date.now();
 
         // Hunger warning
@@ -588,12 +600,19 @@ export class World {
             now - r.lastNeedsWarning.hunger > NEEDS_WARNING_COOLDOWN_MS) {
           r.lastNeedsWarning.hunger = now;
           // Find nearest berry bush with uses remaining
-          let nearestFood: { type: string; id: string; distance: number; uses: number } | null = null;
+          let nearestFood: { type: string; id: string; x: number; y: number; distance: number; uses: number } | null = null;
           for (const [, node] of this.forageableNodes) {
             if (node.type !== 'berry_bush' || node.usesRemaining <= 0) continue;
             const d = Math.hypot(node.x - r.x, node.y - r.y);
             if (!nearestFood || d < nearestFood.distance) {
-              nearestFood = { type: 'berry_bush', id: node.id, distance: Math.round(d), uses: node.usesRemaining };
+              nearestFood = {
+                type: 'berry_bush',
+                id: node.id,
+                x: node.x,
+                y: node.y,
+                distance: Math.round(d),
+                uses: node.usesRemaining,
+              };
             }
           }
           const hasFood = r.inventory.some(i => HUNGER_ITEMS.has(i.type));
@@ -615,6 +634,14 @@ export class World {
               : nearestFood
                 ? `Forage wild_berries at ${nearestFood.id} (${nearestFood.distance}px away, ${nearestFood.uses} uses left), or buy bread at council-supplies`
                 : 'Buy bread at council-supplies shop',
+            suggested_actions: hasFood
+              ? [{ type: 'consume', params: { item_id: hungerConsumables[0]?.item_id } }]
+              : nearestFood
+                ? [
+                    { type: 'move_to', params: { x: nearestFood.x, y: nearestFood.y } },
+                    { type: 'forage', params: { node_id: nearestFood.id } },
+                  ]
+                : [{ type: 'move_to', params: { target: 'council-supplies' } }],
             nearest_food_source: nearestFood,
             has_food_in_inventory: hasFood,
             consumable_items: hungerConsumables,
@@ -625,12 +652,19 @@ export class World {
         if (r.needs.thirst < NEEDS_WARNING_THRESHOLD_THIRST && r.needs.thirst > 0 &&
             now - r.lastNeedsWarning.thirst > NEEDS_WARNING_COOLDOWN_MS) {
           r.lastNeedsWarning.thirst = now;
-          let nearestWater: { type: string; id: string; distance: number; uses: number } | null = null;
+          let nearestWater: { type: string; id: string; x: number; y: number; distance: number; uses: number } | null = null;
           for (const [, node] of this.forageableNodes) {
             if (node.type !== 'fresh_spring' || node.usesRemaining <= 0) continue;
             const d = Math.hypot(node.x - r.x, node.y - r.y);
             if (!nearestWater || d < nearestWater.distance) {
-              nearestWater = { type: 'fresh_spring', id: node.id, distance: Math.round(d), uses: node.usesRemaining };
+              nearestWater = {
+                type: 'fresh_spring',
+                id: node.id,
+                x: node.x,
+                y: node.y,
+                distance: Math.round(d),
+                uses: node.usesRemaining,
+              };
             }
           }
           const hasWater = r.inventory.some(i => THIRST_ITEMS.has(i.type));
@@ -652,6 +686,14 @@ export class World {
               : nearestWater
                 ? `Forage spring_water at ${nearestWater.id} (${nearestWater.distance}px away, ${nearestWater.uses} uses left), or buy water at council-supplies`
                 : 'Buy water at council-supplies shop',
+            suggested_actions: hasWater
+              ? [{ type: 'consume', params: { item_id: thirstConsumables[0]?.item_id } }]
+              : nearestWater
+                ? [
+                    { type: 'move_to', params: { x: nearestWater.x, y: nearestWater.y } },
+                    { type: 'forage', params: { node_id: nearestWater.id } },
+                  ]
+                : [{ type: 'move_to', params: { target: 'council-supplies' } }],
             nearest_water_source: nearestWater,
             has_water_in_inventory: hasWater,
             consumable_items: thirstConsumables,
@@ -676,7 +718,7 @@ export class World {
           sendWebhook(r, 'needs_warning', {
             need: 'bladder', value: Math.round(r.needs.bladder * 10) / 10,
             urgency: r.needs.bladder > 90 ? 'critical' : 'moderate',
-            suggestion: 'Enter a building with a toilet and use the use_toilet action. Accidents cost 5 QUID.',
+            suggestion: `Enter a building with a toilet and use the use_toilet action. Accidents cost ${BLADDER_ACCIDENT_FEE} QUID.`,
           });
         }
 
@@ -714,9 +756,9 @@ export class World {
       // Bladder accident at 100
       if (r.needs.bladder >= 100) {
         r.needs.bladder = 50; // partial relief
-        r.wallet = Math.max(0, r.wallet - 5); // cleaning fee
+        r.wallet = Math.max(0, r.wallet - BLADDER_ACCIDENT_FEE); // cleaning fee
         logEvent('bladder_accident', r.id, null, null, r.x, r.y, {
-          fee: 5, wallet_after: r.wallet
+          fee: BLADDER_ACCIDENT_FEE, wallet_after: r.wallet
         });
       }
     }
@@ -776,17 +818,20 @@ export class World {
     const now = Date.now();
 
     for (const [, r] of this.residents) {
-      if (r.isDead || !r.webhookUrl) continue;
+      if (r.isDead || (!r.webhookUrl && !r.ws)) continue;
 
       // --- Milestone: First 30 minutes survived ---
       if (!r.thirtyMinuteFeedbackSent && now - r.createdAt >= THIRTY_MINUTES_MS) {
         r.thirtyMinuteFeedbackSent = true;
+        const prompt30 = renderMessage(CITY_CONFIG.messages.thirtyMinuteFeedback);
         const token = createFeedbackToken(r.id, 'milestone', {
           milestone: 'first_30_minutes',
           survival_time_ms: now - r.createdAt,
         });
+        r.pendingFeedbackPrompt = prompt30;
+        r.pendingFeedbackToken = token;
         sendWebhook(r, 'reflection', {
-          prompt: renderMessage(CITY_CONFIG.messages.thirtyMinuteFeedback),
+          prompt: prompt30,
           feedback_url: getFeedbackUrl(token),
           survival_time_ms: now - r.createdAt,
           current_needs: { ...r.needs },
@@ -796,12 +841,15 @@ export class World {
       // --- Milestone: First conversation ---
       if (!r.firstConversationFeedbackSent && r.conversationCount >= 1) {
         r.firstConversationFeedbackSent = true;
+        const promptConvo = "You just had your first conversation with another resident. How did that go? What would make social interaction better?";
         const token = createFeedbackToken(r.id, 'milestone', {
           milestone: 'first_conversation',
           survival_time_ms: now - r.createdAt,
         });
+        r.pendingFeedbackPrompt = promptConvo;
+        r.pendingFeedbackToken = token;
         sendWebhook(r, 'reflection', {
-          prompt: "You just had your first conversation with another resident. How did that go? What would make social interaction better?",
+          prompt: promptConvo,
           feedback_url: getFeedbackUrl(token),
           survival_time_ms: now - r.createdAt,
           current_needs: { ...r.needs },
@@ -811,12 +859,15 @@ export class World {
       // --- Milestone: Near-death scare (health was < 20, now recovered above 50) ---
       if (!r.nearDeathFeedbackSent && r.hadLowHealth && r.needs.health > 50) {
         r.nearDeathFeedbackSent = true;
+        const promptNearDeath = "You nearly died but recovered. What happened? What saved you? What would have helped earlier?";
         const token = createFeedbackToken(r.id, 'milestone', {
           milestone: 'near_death_recovery',
           survival_time_ms: now - r.createdAt,
         });
+        r.pendingFeedbackPrompt = promptNearDeath;
+        r.pendingFeedbackToken = token;
         sendWebhook(r, 'reflection', {
-          prompt: "You nearly died but recovered. What happened? What saved you? What would have helped earlier?",
+          prompt: promptNearDeath,
           feedback_url: getFeedbackUrl(token),
           survival_time_ms: now - r.createdAt,
           current_needs: { ...r.needs },
@@ -831,6 +882,8 @@ export class World {
         const token = createFeedbackToken(r.id, 'reflection', {
           survival_time_ms: now - r.createdAt,
         });
+        r.pendingFeedbackPrompt = prompt;
+        r.pendingFeedbackToken = token;
         sendWebhook(r, 'reflection', {
           prompt,
           feedback_url: getFeedbackUrl(token),
@@ -1205,6 +1258,7 @@ export class World {
           distance: 0,
           to: toResident ? speech.directedTo! : undefined,
           to_name: toResident ? toResident.preferredName : undefined,
+          message_id: speech.id,
         });
       }
       return {
@@ -1235,6 +1289,9 @@ export class World {
             ? Math.max(0, Math.round(resident.prisonSentenceEnd - this.worldTime))
             : null,
           carrying_suspect_id: null,
+          pending_feedback: resident.pendingFeedbackPrompt
+            ? { prompt: resident.pendingFeedbackPrompt }
+            : undefined,
         },
         visible: [],
         audible,
@@ -1269,6 +1326,7 @@ export class World {
         distance: 0,
         to: toResident ? speech.directedTo! : undefined,
         to_name: toResident ? toResident.preferredName : undefined,
+        message_id: speech.id,
       });
     }
 
@@ -1363,6 +1421,7 @@ export class World {
             distance: Math.round(dist * 10) / 10,
             to: toResident ? speech.directedTo! : undefined,
             to_name: toResident ? toResident.preferredName : undefined,
+            message_id: speech.id,
           });
 
           // Brain pin: push notification when speech is directed at this resident
@@ -1504,6 +1563,9 @@ export class World {
           : null,
         carrying_suspect_id: resident.carryingSuspectId,
         awaiting_reply_from: this.getAwaitingReplyList(resident),
+        pending_feedback: resident.pendingFeedbackPrompt
+          ? { prompt: resident.pendingFeedbackPrompt }
+          : undefined,
       },
       visible,
       audible,
@@ -1581,6 +1643,7 @@ export class World {
           distance: Math.round(dist * 10) / 10,
           to: toResident ? speech.directedTo! : undefined,
           to_name: toResident ? toResident.preferredName : undefined,
+          message_id: speech.id,
         });
       }
     }
@@ -1596,6 +1659,7 @@ export class World {
         distance: 0,
         to: toResident ? speech.directedTo! : undefined,
         to_name: toResident ? toResident.preferredName : undefined,
+        message_id: speech.id,
       });
     }
 
@@ -1692,6 +1756,9 @@ export class World {
       if (speaker.isDead || speaker.pendingSpeech.length === 0) continue;
 
       for (const speech of speaker.pendingSpeech) {
+        // Only fire side-effects on the first tick (webhooks, logging, lock clearing)
+        if (speech.ticksRemaining < SPEECH_TTL_TICKS) continue;
+
         let range: number;
         switch (speech.volume) {
           case 'whisper': range = WHISPER_RANGE; break;
@@ -1740,8 +1807,8 @@ export class World {
             listener_name: listener.preferredName,
           });
 
-          // Webhook: fire speech_heard for listeners with webhookUrl
-          if (listener.webhookUrl) {
+          // Fire speech_heard for listeners with webhookUrl or WS
+          if (listener.webhookUrl || listener.ws) {
             const isDirected = speech.directedTo === listenerId;
 
             // Throttle undirected speech webhooks to 1/second; directed always fires
@@ -1814,7 +1881,7 @@ export class World {
     const effectiveAmbientRange = AMBIENT_RANGE * visionMult;
 
     for (const [residentId, r] of this.residents) {
-      if (r.isDead || !r.webhookUrl) continue;
+      if (r.isDead || (!r.webhookUrl && !r.ws)) continue;
 
       // --- nearby_resident: fire when a new resident enters visibility ---
       const currentlyVisible = new Set<string>();
@@ -1881,10 +1948,13 @@ export class World {
     }
   }
 
-  /** Clear pending speech after perception broadcast */
-  clearPendingSpeech(): void {
+  /** Decrement speech TTL and filter expired — replaces clearPendingSpeech */
+  tickPendingSpeech(): void {
     for (const [, r] of this.residents) {
-      r.pendingSpeech = [];
+      r.pendingSpeech = r.pendingSpeech.filter(s => {
+        s.ticksRemaining--;
+        return s.ticksRemaining > 0;
+      });
     }
   }
 

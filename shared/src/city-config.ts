@@ -110,8 +110,8 @@ export const CITY_CONFIG: CityConfig = {
   dbFilename: 'otra-city.db',
 
   // ── Economy ───────────────────────────────────────────────────
-  startingMoney: 5,
-  ubiAmount: 0,
+  startingMoney: 10,
+  ubiAmount: 1,
 
   // ── Buildings ─────────────────────────────────────────────────
   buildings: [
@@ -139,7 +139,7 @@ export const CITY_CONFIG: CityConfig = {
 
   // ── Laws ──────────────────────────────────────────────────────
   laws: [
-    { id: 'loitering', name: 'Loitering', description: 'Standing in the same place for more than 1 game hour.', sentenceGameHours: 2 },
+    { id: 'loitering', name: 'Loitering', description: 'Standing in the same place for more than 3 game hours.', sentenceGameHours: 2 },
   ],
 
   // ── Messages ──────────────────────────────────────────────────

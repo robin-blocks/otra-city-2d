@@ -15,6 +15,9 @@ export const WALK_SPEED = 60;                 // px/sec
 export const RUN_SPEED = 120;                 // px/sec
 export const RESIDENT_HITBOX = 16;            // px — half a tile
 
+// === Speech TTL ===
+export const SPEECH_TTL_TICKS = 3;              // 750ms at 4Hz — survive missed perception ticks
+
 // === Perception ===
 export const FOV_ANGLE = Math.PI / 2;         // 90 degrees
 export const FOV_RANGE = 200;                 // px ahead
@@ -72,7 +75,7 @@ export const STARTING_QUID = CITY_CONFIG.startingMoney;
 export const TRAIN_INTERVAL_SEC = 15 * 60;    // 900 game-seconds = 15 game-minutes (5 real minutes at 3x)
 
 // === Bladder accident ===
-export const BLADDER_ACCIDENT_FEE = 5;        // QUID cleaning fee
+export const BLADDER_ACCIDENT_FEE = 2;        // QUID cleaning fee
 
 // === Game time ===
 export const TIME_SCALE = 3;                  // 3x real-time (1 game day = 8 real hours)
@@ -123,8 +126,8 @@ export const SPRING_MAX_USES = 2;
 export const SPRING_REGROW_GAME_HOURS = 3;         // 60 real minutes — scarce enough to encourage trade
 
 // === Law enforcement ===
-export const LOITER_THRESHOLD_GAME_HOURS = 1;  // 1 game-hour of no movement = loitering
-export const LOITER_CHECK_DISTANCE = 16;       // px — movement less than this = "same place"
+export const LOITER_THRESHOLD_GAME_HOURS = 3;  // 3 game-hours of no movement = loitering
+export const LOITER_CHECK_DISTANCE = 32;       // px — movement less than this = "same place"
 export const ARREST_RANGE = 64;                // px — must be within 2 tiles to arrest
 export const ARREST_BOUNTY = 10;               // QUID per booking
 export const ENERGY_COST_ARREST = 0.5;
@@ -144,8 +147,9 @@ export const REFERRAL_DEFAULT_CAP = 5;
 export const REFERRAL_MATURITY_MS = 8 * 60 * 60 * 1000; // 8 real hours (1 game day) before referral is claimable
 
 // === Social need ===
-export const SOCIAL_DECAY_PER_SEC = 100 / (12 * 3600);       // empties in ~12 real hours
+export const SOCIAL_DECAY_PER_SEC = 100 / (24 * 3600);       // empties in ~24 real hours
 export const SOCIAL_RECOVERY_PER_SEC = 100 / (1 * 3600);     // refills in ~1 hr of mutual conversation
+export const SOCIAL_ONESIDED_RECOVERY_PER_SEC = 100 / (6 * 3600); // modest recovery from recent one-sided speech heard by others
 export const HEALTH_DRAIN_SOCIAL = 2 / 3600;                 // 2 health/hr when social = 0
 
 // === Pain signals ===
