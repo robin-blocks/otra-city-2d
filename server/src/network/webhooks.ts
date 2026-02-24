@@ -1,3 +1,4 @@
+import type { WebSocket } from 'ws';
 import type { ResidentEntity } from '../simulation/world.js';
 
 export interface WebhookEvent {
@@ -28,13 +29,24 @@ async function postWebhook(url: string, event: WebhookEvent): Promise<void> {
   }
 }
 
-/** Send a webhook event to a resident if they have a webhook_url configured */
+/** Send event over WebSocket if connected. Fire-and-forget. */
+function sendWsEvent(ws: WebSocket, event: string, payload: WebhookEvent): void {
+  try {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: 'event', event_type: event, data: payload }));
+    }
+  } catch {
+    // Silently ignore — fire and forget
+  }
+}
+
+/** Send an event to a resident over WebSocket and/or HTTP webhook */
 export function sendWebhook(
   resident: ResidentEntity,
   event: string,
   data: Record<string, unknown> = {},
 ): void {
-  if (!resident.webhookUrl) return;
+  if (!resident.webhookUrl && !resident.ws) return;
 
   const payload: WebhookEvent = {
     event,
@@ -44,6 +56,13 @@ export function sendWebhook(
     data,
   };
 
-  // Fire and forget — don't await
-  postWebhook(resident.webhookUrl, payload).catch(() => {});
+  // WebSocket delivery (primary channel)
+  if (resident.ws) {
+    sendWsEvent(resident.ws, event, payload);
+  }
+
+  // HTTP webhook delivery (optional secondary channel)
+  if (resident.webhookUrl) {
+    postWebhook(resident.webhookUrl, payload).catch(() => {});
+  }
 }

@@ -77,7 +77,7 @@ export class GameLoop {
       this.onPerceptionTick(this.tick);
       this.world.computeSpeechListeners();
       this.world.checkNearbyAlerts();
-      this.world.clearPendingSpeech();
+      this.world.tickPendingSpeech();
       this.world.clearPendingNotifications();
       this.world.clearPendingPainMessages();
       this.perceptionAccumulator -= this.PERC_STEP;

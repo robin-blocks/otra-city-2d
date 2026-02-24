@@ -8,7 +8,7 @@ export interface FeedbackToken {
   expiresAt: number;
 }
 
-const TOKEN_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const TOKEN_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours — must survive multiple heartbeat cycles (30min each)
 const feedbackTokens = new Map<string, FeedbackToken>();
 
 /** Create a feedback token and return the token string */
