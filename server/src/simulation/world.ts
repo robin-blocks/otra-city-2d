@@ -1216,14 +1216,21 @@ export class World {
     const arrivals = [...this.trainQueue];
     this.trainQueue = [];
 
+    const jitter = Number(process.env.SPAWN_JITTER_PX) || 0;
+
     for (let i = 0; i < arrivals.length; i++) {
       const residentId = arrivals[i];
       const r = this.residents.get(residentId);
       if (!r) continue;
 
-      // Spread arrivals slightly so they don't stack
-      r.x = spawn.x + (i - arrivals.length / 2) * 20;
-      r.y = spawn.y;
+      // Spread arrivals: random jitter if SPAWN_JITTER_PX is set, otherwise linear spread
+      if (jitter > 0) {
+        r.x = spawn.x + (Math.random() * 2 - 1) * jitter;
+        r.y = spawn.y + (Math.random() * 2 - 1) * jitter;
+      } else {
+        r.x = spawn.x + (i - arrivals.length / 2) * 20;
+        r.y = spawn.y;
+      }
 
       logEvent('arrival', r.id, null, 'train-station', r.x, r.y, {
         name: r.preferredName, passport_no: r.passportNo
@@ -1240,8 +1247,8 @@ export class World {
   queueForTrain(residentId: string): void {
     this.trainQueue.push(residentId);
 
-    // In development, spawn immediately instead of waiting for train
-    if (process.env.NODE_ENV !== 'production') {
+    // Spawn immediately in development or when INSTANT_TRAIN is set (bench mode)
+    if (process.env.NODE_ENV !== 'production' || process.env.INSTANT_TRAIN === 'true') {
       this.spawnTrainArrivals();
     } else {
       const gameSecsUntilTrain = TRAIN_INTERVAL_SEC - this.trainTimer;

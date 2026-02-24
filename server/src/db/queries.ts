@@ -382,6 +382,15 @@ export function getRecentEventsForResident(residentId: string, limit: number = 1
   `).all(residentId, limit) as EventRow[];
 }
 
+export function getEventsSince(since: number, limit: number = 10000): EventRow[] {
+  return getDb().prepare(`
+    SELECT * FROM events
+    WHERE timestamp > ?
+    ORDER BY timestamp ASC
+    LIMIT ?
+  `).all(since, limit) as EventRow[];
+}
+
 // === Activity feed queries ===
 
 export interface FeedEventRow {

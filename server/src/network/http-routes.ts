@@ -4,7 +4,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { signToken, verifyToken } from '../auth/jwt.js';
 import { v4 as uuidv4 } from 'uuid';
-import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, updateResidentWebhookUrl, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards, getReferralCount, insertReferral, updateReferredBy, getRecentReferrals, getTotalReferralRewards, getConversationTurns, getConversationSummary, getConversationHistory, getConversationPartners, insertFeedback, getRecentFeedback, getReputationStats } from '../db/queries.js';
+import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, updateResidentWebhookUrl, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards, getReferralCount, insertReferral, updateReferredBy, getRecentReferrals, getTotalReferralRewards, getConversationTurns, getConversationSummary, getConversationHistory, getConversationPartners, insertFeedback, getRecentFeedback, getReputationStats, getEventsSince } from '../db/queries.js';
 import { consumeFeedbackToken } from './feedback.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
 import { listAvailableJobs } from '../economy/jobs.js';
@@ -51,7 +51,7 @@ export function handleHttpRequest(
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Bench-Token');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -383,6 +383,59 @@ export function handleHttpRequest(
     return true;
   }
 
+  // === Bench endpoints (gated behind REGISTRATION_TOKEN) ===
+
+  // GET /api/bench/agents — Bulk agent status
+  if (req.method === 'GET' && url.pathname === '/api/bench/agents') {
+    if (!validateBenchToken(req, res)) return true;
+    const aliveRows = getAllAliveResidents();
+    const agents = aliveRows.map(row => {
+      const entity = world.residents.get(row.id);
+      return {
+        id: row.id,
+        passport_no: row.passport_no,
+        preferred_name: row.preferred_name,
+        type: row.type,
+        status: row.status,
+        agent_framework: row.agent_framework || null,
+        wallet: entity ? entity.wallet : row.wallet,
+        needs: entity ? {
+          hunger: Math.round(entity.needs.hunger),
+          thirst: Math.round(entity.needs.thirst),
+          energy: Math.round(entity.needs.energy),
+          bladder: Math.round(entity.needs.bladder),
+          health: Math.round(entity.needs.health),
+          social: Math.round(entity.needs.social),
+        } : {
+          hunger: Math.round(row.hunger),
+          thirst: Math.round(row.thirst),
+          energy: Math.round(row.energy),
+          bladder: Math.round(row.bladder),
+          health: Math.round(row.health),
+          social: Math.round(row.social),
+        },
+        condition: entity && !entity.isDead ? computeCondition(entity) : undefined,
+        current_building: entity ? entity.currentBuilding : row.current_building,
+        x: entity ? entity.x : row.x,
+        y: entity ? entity.y : row.y,
+      };
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ agents, count: agents.length }));
+    return true;
+  }
+
+  // GET /api/bench/events — Bulk events since timestamp
+  if (req.method === 'GET' && url.pathname === '/api/bench/events') {
+    if (!validateBenchToken(req, res)) return true;
+    const since = Number(url.searchParams.get('since') || '0');
+    const limit = Math.min(Number(url.searchParams.get('limit') || '10000'), 50000);
+    const events = getEventsSince(since, limit);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ events, count: events.length }));
+    return true;
+  }
+
   return false; // not handled
 }
 
@@ -391,6 +444,14 @@ function handlePassportRegistration(
   res: ServerResponse,
   world: World,
 ): void {
+  // Bench mode: require X-Bench-Token header when REGISTRATION_TOKEN is set
+  const regToken = process.env.REGISTRATION_TOKEN;
+  if (regToken && req.headers['x-bench-token'] !== regToken) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Registration requires a valid X-Bench-Token header' }));
+    return;
+  }
+
   let body = '';
   req.on('data', chunk => { body += chunk; });
   req.on('end', () => {
@@ -780,6 +841,22 @@ function handleInspect(res: ServerResponse, id: string, world: World): void {
 
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=2' });
   res.end(JSON.stringify(data));
+}
+
+/** Validate X-Bench-Token header against REGISTRATION_TOKEN env var. Returns false (and sends 403) if invalid. */
+function validateBenchToken(req: IncomingMessage, res: ServerResponse): boolean {
+  const regToken = process.env.REGISTRATION_TOKEN;
+  if (!regToken) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Bench endpoints require REGISTRATION_TOKEN to be configured' }));
+    return false;
+  }
+  if (req.headers['x-bench-token'] !== regToken) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid or missing X-Bench-Token header' }));
+    return false;
+  }
+  return true;
 }
 
 function authenticateRequest(req: IncomingMessage): { residentId: string; passportNo: string } | null {
