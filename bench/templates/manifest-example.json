@@ -1,0 +1,30 @@
+{
+  "run_id": "run-2026-02-24-test",
+  "run_type": "test",
+  "duration_hours": 1,
+  "otra_city_instance": "http://localhost:3457",
+  "registration_token": "your-secret-token",
+  "openrouter_api_key_ref": "env:OPENROUTER_API_KEY",
+  "spending_limit_usd": 50,
+  "per_model_limit_usd": 20,
+  "models": [
+    {
+      "model_id": "anthropic/claude-sonnet-4-5",
+      "display_name": "Claude Sonnet 4.5",
+      "agent_name": "Bench-Sonnet",
+      "max_tokens_per_day": 2000000
+    },
+    {
+      "model_id": "google/gemini-2.5-flash",
+      "display_name": "Gemini 2.5 Flash",
+      "agent_name": "Bench-Flash",
+      "max_tokens_per_day": 2000000
+    },
+    {
+      "model_id": "openai/gpt-4o-mini",
+      "display_name": "GPT-4o Mini",
+      "agent_name": "Bench-Mini",
+      "max_tokens_per_day": 2000000
+    }
+  ]
+}

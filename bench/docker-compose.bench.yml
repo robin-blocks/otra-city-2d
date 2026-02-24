@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  bench-city:
+    image: otra-city-2d
+    container_name: otra-bench-city
+    ports:
+      - "3457:3456"
+    environment:
+      - NODE_ENV=production
+      - REGISTRATION_TOKEN=${REGISTRATION_TOKEN}
+      - INSTANT_TRAIN=true
+      - SPAWN_JITTER_PX=96
+      - JWT_SECRET=${JWT_SECRET:-bench-secret-change-me}
+    volumes:
+      - bench-db-data:/data
+    restart: unless-stopped
+
+volumes:
+  bench-db-data:
+    # Fresh volume per run — docker compose down -v to reset

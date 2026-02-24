@@ -1,0 +1,17 @@
+{
+  "env": {
+    "OPENROUTER_API_KEY": "${OPENROUTER_API_KEY}"
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openrouter/${MODEL_ID}"
+      },
+      "tokenLimits": {
+        "maxInputTokens": 100000,
+        "maxOutputTokens": 4096,
+        "maxTokensPerDay": ${MAX_TOKENS_PER_DAY}
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@otra/bench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/cli.js",
+  "bin": {
+    "otra-bench": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@otra/shared": "*",
+    "commander": "^12.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0"
+  }
+}
