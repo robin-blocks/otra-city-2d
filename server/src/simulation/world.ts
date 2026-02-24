@@ -40,13 +40,13 @@ import {
   getJob, closeExpiredPetitions,
   getConversationContext, getRelationshipSummary,
 } from '../db/queries.js';
-import type { PerceptionUpdate, AudibleMessage, VisibleEntity, VisibleBuilding } from '@otra/shared';
+import type { PerceptionUpdate, AudibleMessage, VisibleEntity, VisibleBuilding, MapKnowledgeEntry } from '@otra/shared';
 import { enterBuilding } from '../buildings/building-actions.js';
 import { getBuildingType, getBuildingByType } from '../buildings/building-registry.js';
 import { sendWebhook } from '../network/webhooks.js';
 import { createFeedbackToken, getReflectionPrompt, getFeedbackUrl } from '../network/feedback.js';
 import { updateShift } from '../economy/jobs.js';
-import { initShopStock, restockShop, SHOP_CATALOG, FORAGEABLE_ITEMS, getShopItem } from '../economy/shop.js';
+import { initShopStock, restockShop, SHOP_CATALOG, FORAGEABLE_ITEMS, getShopItem, getMapItem } from '../economy/shop.js';
 import { getPainMessage } from './pain-messages.js';
 import type { PainSource, PainIntensity } from './pain-messages.js';
 
@@ -181,6 +181,15 @@ export class World {
   residents = new Map<string, ResidentEntity>();
   forageableNodes = new Map<string, ForageableNodeState>();
   map: TileMap;
+  private readonly mapKnowledgeCity: MapKnowledgeEntry['data']['city'];
+  private readonly mapKnowledgeBuildings: MapKnowledgeEntry['data']['buildings'];
+  private readonly mapKnowledgeForageableBase: Array<{
+    id: string;
+    type: 'berry_bush' | 'fresh_spring';
+    x: number;
+    y: number;
+    max_uses: number;
+  }>;
   worldTime = 0;
   trainTimer = 0;
   shopRestockTimer = 0;
@@ -192,6 +201,35 @@ export class World {
 
   constructor(map: TileMap) {
     this.map = map;
+    this.mapKnowledgeCity = {
+      width_tiles: this.map.data.width,
+      height_tiles: this.map.data.height,
+      tile_size: this.map.data.tileSize,
+      width_px: this.map.widthPx,
+      height_px: this.map.heightPx,
+      spawn_point: this.map.data.spawnPoint,
+    };
+    this.mapKnowledgeBuildings = this.map.data.buildings.map((building) => {
+      const primaryDoor = building.doors[0];
+      return {
+        id: building.id,
+        name: building.name,
+        type: building.type,
+        x: building.tileX * TILE_SIZE,
+        y: building.tileY * TILE_SIZE,
+        width: building.widthTiles * TILE_SIZE,
+        height: building.heightTiles * TILE_SIZE,
+        door_x: primaryDoor ? primaryDoor.tileX * TILE_SIZE + TILE_SIZE / 2 : building.tileX * TILE_SIZE,
+        door_y: primaryDoor ? primaryDoor.tileY * TILE_SIZE + TILE_SIZE / 2 : building.tileY * TILE_SIZE,
+      };
+    });
+    this.mapKnowledgeForageableBase = (this.map.data.forageableNodes ?? []).map(node => ({
+      id: node.id,
+      type: node.type,
+      x: node.tileX * TILE_SIZE + TILE_SIZE / 2,
+      y: node.tileY * TILE_SIZE + TILE_SIZE / 2,
+      max_uses: node.maxUses,
+    }));
 
     // Load world state from DB
     const ws = getWorldState();
@@ -1229,6 +1267,32 @@ export class World {
     return NIGHT_VISION_MULTIPLIER;                                    // Night
   }
 
+  private getMapKnowledge(resident: ResidentEntity): MapKnowledgeEntry[] | undefined {
+    const mapItems = resident.inventory
+      .map(item => getMapItem(item.type))
+      .filter((item): item is NonNullable<ReturnType<typeof getMapItem>> => Boolean(item));
+
+    if (mapItems.length === 0) return undefined;
+
+    const forageableNodes = this.mapKnowledgeForageableBase.map(node => ({
+      ...node,
+      uses_remaining: this.forageableNodes.get(node.id)?.usesRemaining ?? 0,
+    }));
+
+    return mapItems.map(mapItem => ({
+      item_type: mapItem.item_type,
+      map_type: mapItem.map_type,
+      map_version: mapItem.map_version,
+      data: {
+        city: {
+          ...this.mapKnowledgeCity,
+        },
+        buildings: this.mapKnowledgeBuildings,
+        forageable_nodes: forageableNodes,
+      },
+    }));
+  }
+
   /** Compute perception for a single resident */
   computePerception(resident: ResidentEntity, tick: number): PerceptionUpdate {
     const visible: VisibleEntity[] = [];
@@ -1292,6 +1356,7 @@ export class World {
           pending_feedback: resident.pendingFeedbackPrompt
             ? { prompt: resident.pendingFeedbackPrompt }
             : undefined,
+          map_knowledge: this.getMapKnowledge(resident),
         },
         visible: [],
         audible,
@@ -1437,7 +1502,8 @@ export class World {
     // Inventory actions: eat/drink available if resident has consumables
     if (!resident.isSleeping) {
       for (const item of resident.inventory) {
-        if (item.type !== 'sleeping_bag') {
+        const itemDef = getShopItem(item.type);
+        if (itemDef && (itemDef.item_kind === 'consumable' || itemDef.item_kind === 'resource')) {
           interactions.push('eat', 'drink');
           break;
         }
@@ -1471,7 +1537,7 @@ export class World {
       }
       // Tourist Information: referral actions
       if (currentBuildingType === 'info') {
-        interactions.push('get_referral_link', 'claim_referrals');
+        interactions.push('buy', 'get_referral_link', 'claim_referrals');
       }
     }
 
@@ -1566,6 +1632,7 @@ export class World {
         pending_feedback: resident.pendingFeedbackPrompt
           ? { prompt: resident.pendingFeedbackPrompt }
           : undefined,
+        map_knowledge: this.getMapKnowledge(resident),
       },
       visible,
       audible,

@@ -1,7 +1,10 @@
+export type ItemKind = 'consumable' | 'equipment' | 'map' | 'resource';
+
 export interface ShopItem {
   id: string;
   name: string;
   item_type: string;
+  item_kind: ItemKind;
   price: number;
   hunger_restore: number;
   thirst_restore: number;

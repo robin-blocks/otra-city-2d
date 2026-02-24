@@ -3,11 +3,17 @@ import type { ResidentEntity } from '../simulation/world.js';
 import { addInventoryItem, getShopStockForItem, decrementShopStock, restockAll, getShopStock, setShopStock } from '../db/queries.js';
 import { v4 as uuid } from 'uuid';
 
+export interface MapCatalogItem extends ShopItem {
+  map_type: string;
+  map_version: number;
+}
+
 export const SHOP_CATALOG: ShopItem[] = [
   {
     id: 'bread',
     name: 'Bread',
     item_type: 'bread',
+    item_kind: 'consumable',
     price: 3,
     hunger_restore: 30,
     thirst_restore: 0,
@@ -20,6 +26,7 @@ export const SHOP_CATALOG: ShopItem[] = [
     id: 'water',
     name: 'Water Bottle',
     item_type: 'water',
+    item_kind: 'consumable',
     price: 2,
     hunger_restore: 0,
     thirst_restore: 25,
@@ -32,6 +39,7 @@ export const SHOP_CATALOG: ShopItem[] = [
     id: 'full_meal',
     name: 'Full Meal',
     item_type: 'full_meal',
+    item_kind: 'consumable',
     price: 6,
     hunger_restore: 60,
     thirst_restore: 10,
@@ -44,6 +52,7 @@ export const SHOP_CATALOG: ShopItem[] = [
     id: 'snack',
     name: 'Snack Bar',
     item_type: 'snack',
+    item_kind: 'consumable',
     price: 1,
     hunger_restore: 10,
     thirst_restore: 0,
@@ -56,6 +65,7 @@ export const SHOP_CATALOG: ShopItem[] = [
     id: 'energy_drink',
     name: 'Energy Drink',
     item_type: 'energy_drink',
+    item_kind: 'consumable',
     price: 4,
     hunger_restore: 0,
     thirst_restore: 20,
@@ -68,6 +78,7 @@ export const SHOP_CATALOG: ShopItem[] = [
     id: 'sleeping_bag',
     name: 'Sleeping Bag',
     item_type: 'sleeping_bag',
+    item_kind: 'equipment',
     price: 15,
     hunger_restore: 0,
     thirst_restore: 0,
@@ -75,6 +86,25 @@ export const SHOP_CATALOG: ShopItem[] = [
     bladder_effect: 0,
     durability: 5,
     description: 'Sleep better. 5 uses. Doubles energy recovery rate while sleeping.',
+  },
+];
+
+// Map items are intentionally separate so map behavior can evolve independently.
+export const MAP_CATALOG: MapCatalogItem[] = [
+  {
+    id: 'city_map_basic',
+    name: 'City Survey Map',
+    item_type: 'city_map_basic',
+    item_kind: 'map',
+    price: 10,
+    hunger_restore: 0,
+    thirst_restore: 0,
+    energy_effect: 0,
+    bladder_effect: 0,
+    durability: 1,
+    description: 'A detailed city survey map.',
+    map_type: 'city_overview',
+    map_version: 1,
   },
 ];
 
@@ -94,7 +124,20 @@ export function initShopStock(): void {
   if (existing.length === 0) {
     // First run — seed all items
     restockAll(INITIAL_STOCK);
+    // One-time map listing at Tourist Information (does not restock automatically).
+    for (const mapItem of MAP_CATALOG) {
+      setShopStock(mapItem.item_type, 1);
+    }
     console.log('[shop] Initialized shop stock');
+    return;
+  }
+
+  // Ensure map rows exist after upgrades/migrations.
+  for (const mapItem of MAP_CATALOG) {
+    const hasRow = existing.some(row => row.item_type === mapItem.item_type);
+    if (!hasRow) {
+      setShopStock(mapItem.item_type, 1);
+    }
   }
 }
 
@@ -104,6 +147,7 @@ export const FORAGEABLE_ITEMS: ShopItem[] = [
     id: 'wild_berries',
     name: 'Wild Berries',
     item_type: 'wild_berries',
+    item_kind: 'resource',
     price: 0,
     hunger_restore: 12,
     thirst_restore: 5,
@@ -116,6 +160,7 @@ export const FORAGEABLE_ITEMS: ShopItem[] = [
     id: 'spring_water',
     name: 'Spring Water',
     item_type: 'spring_water',
+    item_kind: 'resource',
     price: 0,
     hunger_restore: 3,
     thirst_restore: 8,
@@ -128,7 +173,22 @@ export const FORAGEABLE_ITEMS: ShopItem[] = [
 
 export function getShopItem(itemType: string): ShopItem | undefined {
   return SHOP_CATALOG.find(i => i.item_type === itemType)
+    || MAP_CATALOG.find(i => i.item_type === itemType)
     || FORAGEABLE_ITEMS.find(i => i.item_type === itemType);
+}
+
+export function getMapItem(itemType: string): MapCatalogItem | undefined {
+  return MAP_CATALOG.find(i => i.item_type === itemType);
+}
+
+export function isMapItem(itemType: string): boolean {
+  return MAP_CATALOG.some(i => i.item_type === itemType);
+}
+
+export function canBuyItemAtBuilding(itemType: string, buildingType: string | null | undefined): boolean {
+  if (!buildingType) return false;
+  if (isMapItem(itemType)) return buildingType === 'info';
+  return buildingType === 'shop';
 }
 
 /** Restock all items to their initial stock levels. Returns list of restocked item names. */

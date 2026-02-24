@@ -33,6 +33,9 @@ export function consumeItem(
   if (!shopItem) {
     return { success: false, message: 'Unknown item type' };
   }
+  if (shopItem.item_kind !== 'consumable' && shopItem.item_kind !== 'resource') {
+    return { success: false, message: `${shopItem.name} is not consumable` };
+  }
 
   // Check energy cost
   const energyCost = action === 'eat' ? ENERGY_COST_EAT : ENERGY_COST_DRINK;

@@ -1,5 +1,40 @@
 import type { ResidentState, VisibleResident, InventoryItem } from './resident.js';
 
+export interface MapKnowledgeEntry {
+  item_type: string;
+  map_type: string;
+  map_version: number;
+  data: {
+    city: {
+      width_tiles: number;
+      height_tiles: number;
+      tile_size: number;
+      width_px: number;
+      height_px: number;
+      spawn_point: { x: number; y: number };
+    };
+    buildings: Array<{
+      id: string;
+      name: string;
+      type: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      door_x: number;
+      door_y: number;
+    }>;
+    forageable_nodes: Array<{
+      id: string;
+      type: 'berry_bush' | 'fresh_spring';
+      x: number;
+      y: number;
+      uses_remaining: number;
+      max_uses: number;
+    }>;
+  };
+}
+
 // === Server -> Client/Agent messages ===
 
 export interface PerceptionUpdate {
@@ -29,6 +64,8 @@ export interface PerceptionUpdate {
     prison_sentence_remaining: number | null;  // game-seconds remaining, null if not imprisoned
     carrying_suspect_id: string | null;
     awaiting_reply_from?: Array<{ id: string; name: string; seconds_remaining: number }>;
+    pending_feedback?: { prompt: string };
+    map_knowledge?: MapKnowledgeEntry[];
   };
   visible: VisibleEntity[];
   audible: AudibleMessage[];
@@ -81,6 +118,7 @@ export interface AudibleMessage {
   distance: number;
   to?: string;
   to_name?: string;
+  message_id?: string;
 }
 
 export interface InspectData {
@@ -189,7 +227,8 @@ export type ClientMessage =
   | { type: 'claim_pr'; params: { pr_number: number }; request_id?: string }
   | { type: 'list_claims'; request_id?: string }
   | { type: 'get_referral_link'; request_id?: string }
-  | { type: 'claim_referrals'; request_id?: string };
+  | { type: 'claim_referrals'; request_id?: string }
+  | { type: 'submit_feedback'; params: { text: string }; request_id?: string };
 
 // === Registration ===
 

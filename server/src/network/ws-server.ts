@@ -3,17 +3,17 @@ import type { IncomingMessage } from 'http';
 import type { Server } from 'http';
 import { verifyToken } from '../auth/jwt.js';
 import { type World, type ResidentEntity, computeCondition } from '../simulation/world.js';
-import type { ClientMessage, ServerMessage } from '@otra/shared';
-import { CITY_CONFIG, renderMessage, WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR, ARREST_RANGE, ARREST_BOUNTY, ENERGY_COST_ARREST, LOITER_SENTENCE_GAME_HOURS, FORAGE_RANGE, ENERGY_COST_FORAGE, REFERRAL_MATURITY_MS, WAKE_COOLDOWN_MS, WAKE_MIN_ENERGY, SPEECH_TURN_TIMEOUT_MS, SPEECH_COOLDOWN_MS, SPEECH_DUPLICATE_WINDOW_MS, SPEECH_DUPLICATE_HISTORY } from '@otra/shared';
+import type { ClientMessage, ServerMessage, BuildingType } from '@otra/shared';
+import { CITY_CONFIG, renderMessage, WALK_SPEED, RUN_SPEED, TILE_SIZE, ENERGY_COST_SPEAK, ENERGY_COST_SHOUT, STARTING_HOUR, ARREST_RANGE, ARREST_BOUNTY, ENERGY_COST_ARREST, LOITER_SENTENCE_GAME_HOURS, FORAGE_RANGE, ENERGY_COST_FORAGE, REFERRAL_MATURITY_MS, WAKE_COOLDOWN_MS, WAKE_MIN_ENERGY, SPEECH_TURN_TIMEOUT_MS, SPEECH_COOLDOWN_MS, SPEECH_DUPLICATE_WINDOW_MS, SPEECH_DUPLICATE_HISTORY, SPEECH_TTL_TICKS } from '@otra/shared';
 import {
   logEvent, getResident, getRecentEventsForResident,
   markResidentDeparted, markBodyProcessed, updateCarryingBody,
   getOpenPetitions, addInventoryItem,
   updateCarryingSuspect, updatePrisonState,
   getReferralStats, getClaimableReferrals, claimReferrals,
-  getReputationStats,
+  getReputationStats, insertFeedback,
 } from '../db/queries.js';
-import { buyItem, SHOP_CATALOG, getShopItem } from '../economy/shop.js';
+import { buyItem, getShopItem, canBuyItemAtBuilding, isMapItem } from '../economy/shop.js';
 import { collectUbi } from '../economy/ubi.js';
 import { consumeItem } from '../economy/consume.js';
 import { applyForJob, quitJob, listAvailableJobs } from '../economy/jobs.js';
@@ -22,6 +22,7 @@ import { enterBuilding, exitBuilding, useToilet } from '../buildings/building-ac
 import { getBuildingType, getBuildingByType } from '../buildings/building-registry.js';
 import { findPath } from '../simulation/pathfinding.js';
 import { sendWebhook } from './webhooks.js';
+import { consumeFeedbackToken } from './feedback.js';
 import { getChangelogVersion, getLatestChangelogEntry } from './http-routes.js';
 import { v4 as uuid } from 'uuid';
 import {
@@ -270,48 +271,38 @@ export class WsServer {
     });
   }
 
-  private async handleAction(resident: ResidentEntity, msg: ClientMessage): Promise<void> {
-    // Request ID deduplication
-    const requestId = ('request_id' in msg ? msg.request_id : undefined) || '';
-    if (requestId) {
-      const now = Date.now();
-      // Clean expired entries (>30s old)
-      for (const [id, ts] of resident.recentRequestIds) {
-        if (now - ts > 30_000) resident.recentRequestIds.delete(id);
-      }
-      // Reject duplicate
-      if (resident.recentRequestIds.has(requestId)) {
-        this.sendActionResult(resident, msg, true, 'duplicate_request');
-        return;
-      }
-      // Record this request
-      resident.recentRequestIds.set(requestId, now);
+  private requireAwake(resident: ResidentEntity, msg: ClientMessage): boolean {
+    if (resident.isSleeping) {
+      this.sendActionResult(resident, msg, false, 'sleeping');
+      return false;
     }
+    return true;
+  }
 
-    if (resident.isDead) {
-      this.sendActionResult(resident, msg, false, 'resident_dead');
-      return;
+  private requireBuildingType(
+    resident: ResidentEntity,
+    msg: ClientMessage,
+    buildingType: BuildingType,
+    fallbackName: string,
+    purpose?: string
+  ): boolean {
+    if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== buildingType) {
+      const building = getBuildingByType(buildingType);
+      const suffix = purpose ? ` ${purpose}` : '';
+      this.sendActionResult(resident, msg, false, `Must be inside ${building?.name ?? fallbackName}${suffix}`);
+      return false;
     }
+    return true;
+  }
 
-    // Imprisoned residents can only speak and inspect
-    if (resident.arrestedBy || resident.prisonSentenceEnd) {
-      if (msg.type !== 'inspect' && msg.type !== 'speak') {
-        this.sendActionResult(resident, msg, false, 'imprisoned');
-        return;
-      }
-    }
-
+  private handleMovementAndSpeechActions(resident: ResidentEntity, msg: ClientMessage): boolean {
     switch (msg.type) {
       case 'move': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return true;
         if (resident.needs.energy <= 0) {
           this.sendActionResult(resident, msg, false, 'exhausted', { energy_current: resident.needs.energy });
-          return;
+          return true;
         }
-        // Cancel active pathfinding
         resident.pathWaypoints = null;
         resident.pathTargetBuilding = null;
         resident.pathBlockedTicks = 0;
@@ -323,68 +314,55 @@ export class WsServer {
         resident.facing = msg.params?.direction ?? 0;
         resident.speed = msg.params?.speed === 'run' ? 'run' : 'walk';
         this.sendActionResult(resident, msg, true);
-        break;
+        return true;
       }
-
       case 'stop': {
-        // Cancel active pathfinding
         resident.pathWaypoints = null;
         resident.pathTargetBuilding = null;
         resident.pathBlockedTicks = 0;
-
         resident.velocityX = 0;
         resident.velocityY = 0;
         resident.speed = 'stop';
         this.sendActionResult(resident, msg, true);
-        break;
+        return true;
       }
-
       case 'face': {
         if (!resident.isSleeping) {
           resident.facing = msg.params?.direction ?? resident.facing;
         }
         this.sendActionResult(resident, msg, true);
-        break;
+        return true;
       }
-
       case 'move_to': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return true;
         if (resident.needs.energy <= 0) {
           this.sendActionResult(resident, msg, false, 'exhausted', { energy_current: resident.needs.energy });
-          return;
+          return true;
         }
-
-        // If inside a building, auto-exit first
         if (resident.currentBuilding) {
           const exitResult = exitBuilding(resident, this.world);
           if (!exitResult.success) {
             this.sendActionResult(resident, msg, false, `Cannot exit building: ${exitResult.message}`);
-            return;
+            return true;
           }
         }
 
-        // Resolve target coordinates
         let targetX: number;
         let targetY: number;
         let targetBuildingId: string | null = null;
         const params = msg.params as { target?: string; x?: number; y?: number } | undefined;
 
         if (params && 'target' in params && typeof params.target === 'string') {
-          // Building target — resolve to door approach tile
           const building = this.world.map.data.buildings.find(b => b.id === params.target);
           if (!building) {
             this.sendActionResult(resident, msg, false, 'building_not_found');
-            return;
+            return true;
           }
           if (building.doors.length === 0) {
             this.sendActionResult(resident, msg, false, 'building_has_no_door');
-            return;
+            return true;
           }
           const door = building.doors[0];
-          // Approach tile: one tile in front of door based on facing direction
           const approachOffsets: Record<string, { dx: number; dy: number }> = {
             north: { dx: 0, dy: -1 },
             south: { dx: 0, dy: 1 },
@@ -401,53 +379,43 @@ export class WsServer {
         } else {
           this.sendActionResult(resident, msg, false,
             'invalid_params: move_to requires either {"target":"building-id"} or {"x":number,"y":number} in params');
-          return;
+          return true;
         }
 
-        // Compute A* path
         const path = findPath(this.world.map, resident.x, resident.y, targetX, targetY);
         if (!path) {
           this.sendActionResult(resident, msg, false, 'no_path_found');
-          return;
+          return true;
         }
 
-        // Set path state on resident
         resident.pathWaypoints = path;
         resident.pathIndex = 0;
         resident.pathTargetBuilding = targetBuildingId;
         resident.pathBlockedTicks = 0;
-
         logEvent('move_to', resident.id, null, targetBuildingId, resident.x, resident.y, {
           target_x: targetX, target_y: targetY, waypoint_count: path.length,
         });
         this.sendActionResult(resident, msg, true);
-        break;
+        return true;
       }
-
       case 'speak': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return true;
         const text = msg.params?.text || '';
         const volume = msg.params?.volume || 'normal';
         const directedTo = msg.params?.to || null;
         if (text.length === 0 || text.length > 280) {
           this.sendActionResult(resident, msg, false, 'invalid_text');
-          return;
+          return true;
         }
-        // Global speech cooldown: minimum time between any speech actions
         const now = Date.now();
         const sinceLast = now - resident.lastSpeechTime;
         if (sinceLast < SPEECH_COOLDOWN_MS) {
           this.sendActionResult(resident, msg, false, 'speech_cooldown', {
             wait_ms: SPEECH_COOLDOWN_MS - sinceLast,
           });
-          return;
+          return true;
         }
-        // Duplicate detection: reject identical messages within time window
         const normalizedText = text.trim().toLowerCase();
-        // Prune old entries
         resident.recentSpeechTexts = resident.recentSpeechTexts.filter(
           s => now - s.time < SPEECH_DUPLICATE_WINDOW_MS
         );
@@ -455,14 +423,12 @@ export class WsServer {
           this.sendActionResult(resident, msg, false, 'duplicate_speech', {
             window_seconds: Math.round(SPEECH_DUPLICATE_WINDOW_MS / 1000),
           });
-          return;
+          return true;
         }
-        // Validate directed target exists if specified
         if (directedTo && !this.world.residents.has(directedTo)) {
           this.sendActionResult(resident, msg, false, 'target_not_found');
-          return;
+          return true;
         }
-        // Turn-based speech: can't speak to someone you're already waiting for a reply from
         if (directedTo) {
           const awaitingSince = resident.awaitingReplyFrom.get(directedTo);
           if (awaitingSince !== undefined) {
@@ -474,49 +440,42 @@ export class WsServer {
                 target_name: target?.preferredName ?? 'unknown',
                 wait_ms: SPEECH_TURN_TIMEOUT_MS - elapsed,
               });
-              return;
-            } else {
-              // Expired — clear the lock
-              resident.awaitingReplyFrom.delete(directedTo);
+              return true;
             }
+            resident.awaitingReplyFrom.delete(directedTo);
           }
         }
         const cost = volume === 'shout' ? ENERGY_COST_SHOUT : ENERGY_COST_SPEAK;
         if (resident.needs.energy < cost) {
           this.sendActionResult(resident, msg, false, 'insufficient_energy', { energy_needed: cost, energy_current: resident.needs.energy });
-          return;
+          return true;
         }
         resident.needs.energy -= cost;
-        resident.pendingSpeech.push({ text, volume, time: now, directedTo });
+        resident.pendingSpeech.push({ id: uuid(), text, volume, time: now, directedTo, ticksRemaining: SPEECH_TTL_TICKS });
         logEvent('speak', resident.id, directedTo, null, resident.x, resident.y, { text, volume, to: directedTo });
-        // Record for rate limiting and duplicate detection
         resident.lastSpeechTime = now;
         resident.recentSpeechTexts.push({ text: normalizedText, time: now });
         if (resident.recentSpeechTexts.length > SPEECH_DUPLICATE_HISTORY) {
           resident.recentSpeechTexts.shift();
         }
-        // Set turn lock: must wait for their reply before speaking to them again
         if (directedTo) {
           resident.awaitingReplyFrom.set(directedTo, now);
         }
         this.sendActionResult(resident, msg, true);
-        break;
+        return true;
       }
-
       case 'sleep': {
         if (resident.isSleeping) {
           this.sendActionResult(resident, msg, false, 'already_sleeping');
-          return;
+          return true;
         }
         if (resident.needs.energy >= 90) {
           this.sendActionResult(resident, msg, false, 'not_tired', { energy_current: resident.needs.energy });
-          return;
+          return true;
         }
-        // Cancel active pathfinding
         resident.pathWaypoints = null;
         resident.pathTargetBuilding = null;
         resident.pathBlockedTicks = 0;
-
         resident.isSleeping = true;
         resident.sleepStartedAt = Date.now();
         resident.velocityX = 0;
@@ -524,48 +483,39 @@ export class WsServer {
         resident.speed = 'stop';
         logEvent('sleep', resident.id, null, null, resident.x, resident.y, {});
         this.sendActionResult(resident, msg, true);
-        break;
+        return true;
       }
-
       case 'wake': {
         if (!resident.isSleeping) {
           this.sendActionResult(resident, msg, false, 'not_sleeping');
-          return;
+          return true;
         }
-        // Prevent sleep-wake thrashing: minimum 30s of sleep
         const sleepDuration = Date.now() - resident.sleepStartedAt;
         if (sleepDuration < WAKE_COOLDOWN_MS) {
           this.sendActionResult(resident, msg, false, 'too_soon', { retry_after_ms: WAKE_COOLDOWN_MS - sleepDuration });
-          return;
+          return true;
         }
-        // Prevent waking at near-zero energy (would just re-collapse)
         if (resident.needs.energy < WAKE_MIN_ENERGY) {
           this.sendActionResult(resident, msg, false, 'too_tired', { energy_needed: WAKE_MIN_ENERGY, energy_current: resident.needs.energy });
-          return;
+          return true;
         }
         resident.isSleeping = false;
         resident.sleepStartedAt = 0;
         logEvent('wake', resident.id, null, null, resident.x, resident.y, {});
         this.sendActionResult(resident, msg, true);
-        break;
+        return true;
       }
-
       case 'enter_building': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return true;
         const buildingId = msg.params?.building_id;
         if (!buildingId) {
           this.sendActionResult(resident, msg, false, 'missing_building_id');
-          return;
+          return true;
         }
         const enterResult = enterBuilding(resident, buildingId, this.world);
         logEvent('enter_building', resident.id, null, buildingId, resident.x, resident.y, { success: enterResult.success });
         this.sendActionResult(resident, msg, enterResult.success, enterResult.message);
-
-        // Webhook: notify about available shifts when entering a building
-        if (enterResult.success && resident.webhookUrl && !resident.employment) {
+        if (enterResult.success && (resident.webhookUrl || resident.ws) && !resident.employment) {
           const jobs = listAvailableJobs();
           const buildingJobs = jobs.filter(j => j.building_id === buildingId && j.openings > 0);
           for (const job of buildingJobs) {
@@ -580,32 +530,41 @@ export class WsServer {
             });
           }
         }
-        break;
+        return true;
       }
-
       case 'exit_building': {
         const exitResult = exitBuilding(resident, this.world);
         logEvent('exit_building', resident.id, null, resident.currentBuilding, resident.x, resident.y, { success: exitResult.success });
         this.sendActionResult(resident, msg, exitResult.success, exitResult.message);
-        break;
+        return true;
       }
+      default:
+        return false;
+    }
+  }
 
+  private handleEconomyActions(resident: ResidentEntity, msg: ClientMessage): boolean {
+    switch (msg.type) {
       case 'buy': {
-        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'shop') {
-          const shopBuilding = getBuildingByType('shop');
-          this.sendActionResult(resident, msg, false, `Must be inside ${shopBuilding?.name ?? 'a shop'}`);
-          return;
-        }
         const itemType = msg.params?.item_type;
         const quantity = msg.params?.quantity ?? 1;
         if (!itemType) {
           this.sendActionResult(resident, msg, false, 'missing_item_type');
-          return;
+          return true;
+        }
+        const buildingType = resident.currentBuilding ? getBuildingType(resident.currentBuilding) : null;
+        if (!canBuyItemAtBuilding(itemType, buildingType)) {
+          const requiredBuilding = isMapItem(itemType)
+            ? (getBuildingByType('info')?.name ?? 'Tourist Information')
+            : (getBuildingByType('shop')?.name ?? 'a shop');
+          this.sendActionResult(resident, msg, false, `Must be inside ${requiredBuilding}`);
+          return true;
         }
         const buyResult = buyItem(resident, itemType, quantity);
         if (buyResult.success) {
+          const itemPrice = getShopItem(itemType)?.price ?? 0;
           logEvent('buy', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
-            item_type: itemType, quantity, cost: (SHOP_CATALOG.find(i => i.item_type === itemType)?.price ?? 0) * quantity,
+            item_type: itemType, quantity, cost: itemPrice * quantity,
           });
         }
         this.sendActionResult(resident, msg, buyResult.success, buyResult.message,
@@ -614,15 +573,10 @@ export class WsServer {
             wallet: resident.wallet,
             inventory: resident.inventory,
           } : undefined);
-        break;
+        return true;
       }
-
       case 'collect_ubi': {
-        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'bank') {
-          const bankBuilding = getBuildingByType('bank');
-          this.sendActionResult(resident, msg, false, `Must be inside ${bankBuilding?.name ?? 'the bank'}`);
-          return;
-        }
+        if (!this.requireBuildingType(resident, msg, 'bank', 'the bank')) return true;
         const ubiResult = collectUbi(resident);
         if (ubiResult.success) {
           logEvent('collect_ubi', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
@@ -633,69 +587,119 @@ export class WsServer {
           ubiResult.success
             ? { amount: ubiResult.amount, wallet: ubiResult.newBalance }
             : { cooldown_remaining: ubiResult.cooldownRemaining });
-        break;
+        return true;
       }
-
       case 'use_toilet': {
         const toiletResult = useToilet(resident);
         if (toiletResult.success) {
           logEvent('use_toilet', resident.id, null, resident.currentBuilding, resident.x, resident.y, {});
         }
         this.sendActionResult(resident, msg, toiletResult.success, toiletResult.message);
-        break;
+        return true;
       }
-
-      case 'eat': {
-        const eatItemId = msg.params?.item_id;
-        if (!eatItemId) {
-          this.sendActionResult(resident, msg, false, 'missing_item_id');
-          return;
-        }
-        const eatResult = consumeItem(resident, eatItemId, 'eat');
-        if (eatResult.success) {
-          logEvent('eat', resident.id, null, null, resident.x, resident.y, {
-            item_id: eatItemId, effects: eatResult.effects,
-          });
-        }
-        this.sendActionResult(resident, msg, eatResult.success, eatResult.message,
-          eatResult.success ? { effects: eatResult.effects, inventory: resident.inventory } : undefined);
-        break;
-      }
-
-      case 'drink': {
-        const drinkItemId = msg.params?.item_id;
-        if (!drinkItemId) {
-          this.sendActionResult(resident, msg, false, 'missing_item_id');
-          return;
-        }
-        const drinkResult = consumeItem(resident, drinkItemId, 'drink');
-        if (drinkResult.success) {
-          logEvent('drink', resident.id, null, null, resident.x, resident.y, {
-            item_id: drinkItemId, effects: drinkResult.effects,
-          });
-        }
-        this.sendActionResult(resident, msg, drinkResult.success, drinkResult.message,
-          drinkResult.success ? { effects: drinkResult.effects, inventory: resident.inventory } : undefined);
-        break;
-      }
-
+      case 'eat':
+      case 'drink':
       case 'consume': {
-        const consumeItemId = msg.params?.item_id;
-        if (!consumeItemId) {
+        const itemId = msg.params?.item_id;
+        if (!itemId) {
           this.sendActionResult(resident, msg, false, 'missing_item_id');
-          return;
+          return true;
         }
-        const consumeResult = consumeItem(resident, consumeItemId, 'eat');
-        if (consumeResult.success) {
-          logEvent('consume', resident.id, null, null, resident.x, resident.y, {
-            item_id: consumeItemId, effects: consumeResult.effects,
+        const consumeMode = msg.type === 'drink' ? 'drink' : 'eat';
+        const result = consumeItem(resident, itemId, consumeMode);
+        if (result.success) {
+          logEvent(msg.type, resident.id, null, null, resident.x, resident.y, {
+            item_id: itemId, effects: result.effects,
           });
         }
-        this.sendActionResult(resident, msg, consumeResult.success, consumeResult.message,
-          consumeResult.success ? { effects: consumeResult.effects, inventory: resident.inventory } : undefined);
-        break;
+        this.sendActionResult(resident, msg, result.success, result.message,
+          result.success ? { effects: result.effects, inventory: resident.inventory } : undefined);
+        return true;
       }
+      default:
+        return false;
+    }
+  }
 
+  private handleTourismAndFeedbackActions(resident: ResidentEntity, msg: ClientMessage): boolean {
+    switch (msg.type) {
+      case 'get_referral_link': {
+        if (!this.requireBuildingType(resident, msg, 'info', 'Tourist Information')) return true;
+        const refStats = getReferralStats(resident.id, REFERRAL_MATURITY_MS);
+        this.sendActionResult(resident, msg, true, 'Here is your referral link.', {
+          link: `https://${CITY_CONFIG.domain}/quick-start?ref=${resident.passportNo}`,
+          stats: refStats,
+        });
+        return true;
+      }
+      case 'claim_referrals': {
+        if (!this.requireBuildingType(resident, msg, 'info', 'Tourist Information')) return true;
+        const claimable = getClaimableReferrals(resident.id, REFERRAL_MATURITY_MS);
+        if (claimable.length === 0) {
+          const refInfo = getReferralStats(resident.id, REFERRAL_MATURITY_MS);
+          if (refInfo.maturing > 0) {
+            this.sendActionResult(resident, msg, false, `No claimable referrals yet. ${refInfo.maturing} referral(s) still maturing (new residents must survive 1 day).`);
+          } else {
+            this.sendActionResult(resident, msg, false, 'No referrals to claim. Share your referral link to invite new residents!');
+          }
+          return true;
+        }
+        const ids = claimable.map(r => r.id);
+        const result = claimReferrals(ids, Date.now());
+        resident.wallet += result.total;
+        logEvent('referral_claimed', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
+          count: result.count,
+          total: result.total,
+          wallet: resident.wallet,
+        });
+        sendWebhook(resident, 'referral_claimed', {
+          count: result.count,
+          total: result.total,
+          wallet: resident.wallet,
+        });
+        resident.pendingNotifications.push(`Claimed ${result.count} referral reward${result.count !== 1 ? 's' : ''} — earned ${CITY_CONFIG.currencySymbol}${result.total}!`);
+        this.sendActionResult(resident, msg, true, `Claimed ${result.count} referral(s).`, {
+          claimed_count: result.count,
+          reward_total: result.total,
+          wallet: resident.wallet,
+        });
+        return true;
+      }
+      case 'submit_feedback': {
+        const feedbackText = (msg as { params?: { text?: string } }).params?.text;
+        if (!feedbackText || typeof feedbackText !== 'string' || feedbackText.length < 1 || feedbackText.length > 10000) {
+          this.sendActionResult(resident, msg, false, 'text must be 1-10000 characters');
+          return true;
+        }
+        if (!resident.pendingFeedbackToken) {
+          this.sendActionResult(resident, msg, false, 'no_pending_feedback');
+          return true;
+        }
+        const tokenData = consumeFeedbackToken(resident.pendingFeedbackToken);
+        if (!tokenData) {
+          resident.pendingFeedbackPrompt = null;
+          resident.pendingFeedbackToken = null;
+          this.sendActionResult(resident, msg, false, 'feedback_expired');
+          return true;
+        }
+        const feedbackId = crypto.randomUUID();
+        insertFeedback(feedbackId, tokenData.residentId, tokenData.trigger, tokenData.triggerContext, null, feedbackText, null);
+        resident.pendingFeedbackPrompt = null;
+        resident.pendingFeedbackToken = null;
+        logEvent('submit_feedback', resident.id, null, null, resident.x, resident.y, {
+          trigger: tokenData.trigger, text_length: feedbackText.length,
+        });
+        console.log(`[Feedback] ${resident.preferredName} submitted ${tokenData.trigger} feedback`);
+        this.sendActionResult(resident, msg, true, 'Thank you for your feedback.');
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  private handleSocialActions(resident: ResidentEntity, msg: ClientMessage): void {
+    switch (msg.type) {
       case 'inspect': {
         const targetId = msg.params?.target_id;
         if (!targetId) {
@@ -757,14 +761,11 @@ export class WsServer {
             },
           });
         }
-        break;
+        return;
       }
 
       case 'trade': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return;
         const tradeTargetId = msg.params?.target_id;
         const offerQuid = msg.params?.offer_quid ?? 0;
         const requestQuid = msg.params?.request_quid ?? 0;
@@ -796,7 +797,6 @@ export class WsServer {
           return;
         }
 
-        // Must be nearby (within 100px)
         const tdx = tradeTarget.x - resident.x;
         const tdy = tradeTarget.y - resident.y;
         const tradeDist = Math.sqrt(tdx * tdx + tdy * tdy);
@@ -805,7 +805,6 @@ export class WsServer {
           return;
         }
 
-        // Execute transfer
         resident.wallet -= offerQuid;
         tradeTarget.wallet += offerQuid;
 
@@ -813,7 +812,6 @@ export class WsServer {
           offer_quid: offerQuid, sender_wallet: resident.wallet, receiver_wallet: tradeTarget.wallet,
         });
 
-        // Notify sender
         this.sendActionResult(resident, msg, true, `Gave ${offerQuid} QUID to ${tradeTarget.preferredName}`, {
           offer_quid: offerQuid,
           wallet: resident.wallet,
@@ -821,7 +819,6 @@ export class WsServer {
           target_name: tradeTarget.preferredName,
         });
 
-        // Notify receiver via their pending notifications
         tradeTarget.pendingNotifications.push(`Received ${offerQuid} QUID from ${resident.preferredName}.`);
         sendWebhook(tradeTarget, 'trade_received', {
           amount: offerQuid,
@@ -829,14 +826,11 @@ export class WsServer {
           from_name: resident.preferredName,
           wallet: tradeTarget.wallet,
         });
-        break;
+        return;
       }
 
       case 'give': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return;
         const giveTargetId = msg.params?.target_id;
         const giveItemId = msg.params?.item_id;
         const giveQuantity = msg.params?.quantity ?? 1;
@@ -854,7 +848,6 @@ export class WsServer {
           return;
         }
 
-        // Find item in sender's inventory
         const giveItem = resident.inventory.find(i => i.id === giveItemId);
         if (!giveItem) {
           this.sendActionResult(resident, msg, false, 'item_not_found');
@@ -875,7 +868,6 @@ export class WsServer {
           return;
         }
 
-        // Must be nearby
         const gdx = giveTarget.x - resident.x;
         const gdy = giveTarget.y - resident.y;
         const giveDist = Math.sqrt(gdx * gdx + gdy * gdy);
@@ -884,17 +876,14 @@ export class WsServer {
           return;
         }
 
-        // Deduct energy
         resident.needs.energy = Math.max(0, resident.needs.energy - ENERGY_COST_GIVE);
 
-        // Remove/decrement from sender's in-memory inventory
         const itemType = giveItem.type;
         giveItem.quantity -= giveQuantity;
         if (giveItem.quantity <= 0) {
           resident.inventory = resident.inventory.filter(i => i.id !== giveItemId);
         }
 
-        // Add to receiver's in-memory inventory (stack if same type)
         const existingTargetItem = giveTarget.inventory.find(i => i.type === itemType);
         if (existingTargetItem) {
           existingTargetItem.quantity += giveQuantity;
@@ -906,10 +895,8 @@ export class WsServer {
           });
         }
 
-        // Persist to DB
         addInventoryItem(giveTarget.id, itemType, giveQuantity, -1);
 
-        // Get a human-readable name for the item
         const shopItemDef = getShopItem(itemType);
         const itemName = shopItemDef?.name || itemType;
 
@@ -919,7 +906,6 @@ export class WsServer {
           quantity: giveQuantity,
         });
 
-        // Notify sender
         this.sendActionResult(resident, msg, true, `Gave ${giveQuantity}x ${itemName} to ${giveTarget.preferredName}`, {
           item_type: itemType,
           quantity: giveQuantity,
@@ -928,7 +914,6 @@ export class WsServer {
           inventory: resident.inventory,
         });
 
-        // Notify receiver
         giveTarget.pendingNotifications.push(`Received ${giveQuantity}x ${itemName} from ${resident.preferredName}.`);
         sendWebhook(giveTarget, 'gift_received', {
           item_type: itemType,
@@ -938,21 +923,16 @@ export class WsServer {
           from_name: resident.preferredName,
           inventory: giveTarget.inventory,
         });
-        break;
+        return;
       }
+    }
+  }
 
-      // === Employment ===
-
+  private handleCivicActions(resident: ResidentEntity, msg: ClientMessage): void {
+    switch (msg.type) {
       case 'apply_job': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
-        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'hall') {
-          const hallBuilding = getBuildingByType('hall');
-          this.sendActionResult(resident, msg, false, `Must be inside ${hallBuilding?.name ?? 'the hall'} to apply for a job`);
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return;
+        if (!this.requireBuildingType(resident, msg, 'hall', 'the hall', 'to apply for a job')) return;
         const jobId = msg.params?.job_id;
         if (!jobId) {
           const jobs = listAvailableJobs();
@@ -966,11 +946,10 @@ export class WsServer {
           applyResult.success && applyResult.job
             ? { job_id: applyResult.job.id, job_title: applyResult.job.title, wage: applyResult.job.wage_per_shift, building_id: applyResult.job.building_id }
             : applyResult.available_jobs ? { available_jobs: applyResult.available_jobs } : undefined);
-        break;
+        return;
       }
 
       case 'quit_job': {
-        // Release suspect if quitting officer is carrying one
         if (resident.carryingSuspectId) {
           const suspect = this.world.residents.get(resident.carryingSuspectId);
           if (suspect) {
@@ -983,27 +962,18 @@ export class WsServer {
         }
         const quitResult = quitJob(resident);
         this.sendActionResult(resident, msg, quitResult.success, quitResult.message);
-        break;
+        return;
       }
 
       case 'list_jobs': {
         const jobs = listAvailableJobs();
         this.sendActionResult(resident, msg, true, undefined, { jobs });
-        break;
+        return;
       }
 
-      // === Petitions ===
-
       case 'write_petition': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
-        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'hall') {
-          const hallBuilding = getBuildingByType('hall');
-          this.sendActionResult(resident, msg, false, `Must be inside ${hallBuilding?.name ?? 'the hall'} to write a petition`);
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return;
+        if (!this.requireBuildingType(resident, msg, 'hall', 'the hall', 'to write a petition')) return;
         const category = msg.params?.category;
         const description = msg.params?.description;
         if (!category || !description) {
@@ -1015,19 +985,12 @@ export class WsServer {
           petitionResult.success && petitionResult.petition
             ? { petition_id: petitionResult.petition.id, category, description }
             : undefined);
-        break;
+        return;
       }
 
       case 'vote_petition': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
-        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'hall') {
-          const hallBuilding = getBuildingByType('hall');
-          this.sendActionResult(resident, msg, false, `Must be inside ${hallBuilding?.name ?? 'the hall'} to vote`);
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return;
+        if (!this.requireBuildingType(resident, msg, 'hall', 'the hall', 'to vote')) return;
         const petitionId = msg.params?.petition_id;
         if (!petitionId) {
           this.sendActionResult(resident, msg, false, 'missing petition_id');
@@ -1036,42 +999,28 @@ export class WsServer {
         const voteValue = msg.params?.vote || 'for';
         const voteResult = voteOnPetition(resident, petitionId, voteValue);
         this.sendActionResult(resident, msg, voteResult.success, voteResult.message);
-        break;
+        return;
       }
 
       case 'list_petitions': {
         const openPetitions = getOpenPetitions();
         this.sendActionResult(resident, msg, true, undefined, { petitions: openPetitions });
-        break;
+        return;
       }
 
-      // === Departure ===
-
       case 'depart': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
-        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'station') {
-          const stationBuilding = getBuildingByType('station');
-          this.sendActionResult(resident, msg, false, `Must be inside ${stationBuilding?.name ?? 'the station'} to depart`);
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return;
+        if (!this.requireBuildingType(resident, msg, 'station', 'the station', 'to depart')) return;
 
-        // Mark as departed
         markResidentDeparted(resident.id);
         logEvent('depart', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
           name: resident.preferredName, passport_no: resident.passportNo,
         });
 
-        // Send final action result before closing
         this.sendActionResult(resident, msg, true, renderMessage(CITY_CONFIG.messages.departAction, { actor: resident.preferredName }));
-
-        // Send webhook
         sendWebhook(resident, 'depart', { x: resident.x, y: resident.y });
 
-        // Remove from world and close connection
-        resident.isDead = true; // prevents further processing
+        resident.isDead = true;
         this.world.residents.delete(resident.id);
         if (resident.ws) {
           resident.ws.close(1000, 'Departed');
@@ -1080,16 +1029,15 @@ export class WsServer {
         this.connections.delete(resident.id);
 
         console.log(`[World] ${resident.preferredName} (${resident.passportNo}) departed ${CITY_CONFIG.name}`);
-        break;
+        return;
       }
+    }
+  }
 
-      // === Body Collection ===
-
+  private handleSafetyActions(resident: ResidentEntity, msg: ClientMessage): void {
+    switch (msg.type) {
       case 'collect_body': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return;
         if (resident.carryingBodyId) {
           this.sendActionResult(resident, msg, false, 'Already carrying a body. Go to the mortuary to process it.');
           return;
@@ -1111,7 +1059,6 @@ export class WsServer {
           return;
         }
 
-        // Check distance
         const bdx = body.x - resident.x;
         const bdy = body.y - resident.y;
         const bodyDist = Math.sqrt(bdx * bdx + bdy * bdy);
@@ -1120,12 +1067,10 @@ export class WsServer {
           return;
         }
 
-        // Pick up the body
         resident.needs.energy -= ENERGY_COST_COLLECT_BODY;
         resident.carryingBodyId = bodyId;
         updateCarryingBody(resident.id, bodyId);
 
-        // Remove body from visible world (move it off-map)
         body.x = -9999;
         body.y = -9999;
 
@@ -1138,19 +1083,12 @@ export class WsServer {
           body_id: bodyId,
           body_name: body.preferredName,
         });
-        break;
+        return;
       }
 
       case 'process_body': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
-        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'mortuary') {
-          const mortuaryBuilding = getBuildingByType('mortuary');
-          this.sendActionResult(resident, msg, false, `Must be inside ${mortuaryBuilding?.name ?? 'the mortuary'}`);
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return;
+        if (!this.requireBuildingType(resident, msg, 'mortuary', 'the mortuary')) return;
         if (!resident.carryingBodyId) {
           this.sendActionResult(resident, msg, false, 'Not carrying a body');
           return;
@@ -1159,15 +1097,12 @@ export class WsServer {
         const processedBodyId = resident.carryingBodyId;
         const processedBody = this.world.residents.get(processedBodyId);
 
-        // Process the body
         markBodyProcessed(processedBodyId);
         resident.carryingBodyId = null;
         updateCarryingBody(resident.id, null);
 
-        // Pay bounty
         resident.wallet += BODY_BOUNTY;
 
-        // Remove body from world
         if (processedBody) {
           this.world.residents.delete(processedBodyId);
         }
@@ -1185,16 +1120,11 @@ export class WsServer {
         });
 
         resident.pendingNotifications.push(`Processed body at mortuary. Earned ${BODY_BOUNTY} QUID.`);
-        break;
+        return;
       }
 
-      // === Law Enforcement ===
-
       case 'arrest': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return;
         if (resident.currentJobId !== 'police-officer') {
           this.sendActionResult(resident, msg, false, 'Only police officers can arrest');
           return;
@@ -1232,7 +1162,6 @@ export class WsServer {
           return;
         }
 
-        // Check distance
         const adx = suspect.x - resident.x;
         const ady = suspect.y - resident.y;
         const arrestDist = Math.sqrt(adx * adx + ady * ady);
@@ -1241,7 +1170,6 @@ export class WsServer {
           return;
         }
 
-        // If the suspect is a police officer carrying someone, release their suspect first
         if (suspect.carryingSuspectId) {
           const suspectsSuspect = this.world.residents.get(suspect.carryingSuspectId);
           if (suspectsSuspect) {
@@ -1253,7 +1181,6 @@ export class WsServer {
           updateCarryingSuspect(suspect.id, null);
         }
 
-        // Execute arrest
         resident.needs.energy -= ENERGY_COST_ARREST;
         resident.carryingSuspectId = suspect.id;
         suspect.arrestedBy = resident.id;
@@ -1264,7 +1191,6 @@ export class WsServer {
         suspect.pathTargetBuilding = null;
         suspect.pathBlockedTicks = 0;
 
-        // Persist
         updateCarryingSuspect(resident.id, suspect.id);
         updatePrisonState(suspect.id, resident.id, null);
 
@@ -1292,19 +1218,12 @@ export class WsServer {
           suspect_name: suspect.preferredName,
           offenses: suspect.lawBreaking,
         });
-        break;
+        return;
       }
 
       case 'book_suspect': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
-        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'police') {
-          const policeBuilding = getBuildingByType('police');
-          this.sendActionResult(resident, msg, false, `Must be inside ${policeBuilding?.name ?? 'the police station'}`);
-          return;
-        }
+        if (!this.requireAwake(resident, msg)) return;
+        if (!this.requireBuildingType(resident, msg, 'police', 'the police station')) return;
         if (!resident.carryingSuspectId) {
           this.sendActionResult(resident, msg, false, 'Not escorting a suspect');
           return;
@@ -1312,30 +1231,24 @@ export class WsServer {
 
         const bookedSuspect = this.world.residents.get(resident.carryingSuspectId);
         if (!bookedSuspect || bookedSuspect.isDead) {
-          // Suspect gone — clear state
           resident.carryingSuspectId = null;
           updateCarryingSuspect(resident.id, null);
           this.sendActionResult(resident, msg, false, 'Suspect no longer available');
           return;
         }
 
-        // Determine sentence (based on offenses)
-        const sentenceGameHours = LOITER_SENTENCE_GAME_HOURS; // 2 game-hours for loitering
+        const sentenceGameHours = LOITER_SENTENCE_GAME_HOURS;
         const sentenceGameSeconds = sentenceGameHours * 3600;
         const sentenceEnd = this.world.worldTime + sentenceGameSeconds;
 
-        // Book the suspect into prison
         bookedSuspect.prisonSentenceEnd = sentenceEnd;
         bookedSuspect.currentBuilding = resident.currentBuilding;
 
-        // Clear officer's carry state
         resident.carryingSuspectId = null;
         updateCarryingSuspect(resident.id, null);
 
-        // Pay officer bounty
         resident.wallet += ARREST_BOUNTY;
 
-        // Persist
         updatePrisonState(bookedSuspect.id, resident.id, sentenceEnd);
 
         logEvent('book_suspect', resident.id, bookedSuspect.id, resident.currentBuilding, resident.x, resident.y, {
@@ -1370,158 +1283,147 @@ export class WsServer {
         });
 
         resident.pendingNotifications.push(`Booked ${bookedSuspect.preferredName} into prison. Earned ${ARREST_BOUNTY} QUID.`);
-        break;
+        return;
       }
-
-      // === Foraging ===
-
-      case 'forage': {
-        if (resident.isSleeping) {
-          this.sendActionResult(resident, msg, false, 'sleeping');
-          return;
-        }
-        if (resident.needs.energy < ENERGY_COST_FORAGE) {
-          this.sendActionResult(resident, msg, false, 'Not enough energy to forage', { energy_needed: ENERGY_COST_FORAGE, energy_current: resident.needs.energy });
-          return;
-        }
-
-        const nodeId = msg.params?.node_id;
-        if (!nodeId) {
-          this.sendActionResult(resident, msg, false, 'missing node_id');
-          return;
-        }
-
-        const node = this.world.forageableNodes.get(nodeId);
-        if (!node) {
-          this.sendActionResult(resident, msg, false, 'node_not_found');
-          return;
-        }
-
-        // Check distance
-        const fdx = node.x - resident.x;
-        const fdy = node.y - resident.y;
-        const forageDist = Math.sqrt(fdx * fdx + fdy * fdy);
-        if (forageDist > FORAGE_RANGE) {
-          this.sendActionResult(resident, msg, false, 'Too far from resource node');
-          return;
-        }
-
-        if (node.usesRemaining <= 0) {
-          this.sendActionResult(resident, msg, false, 'This resource is depleted. Try another one.');
-          return;
-        }
-
-        // Execute forage
-        resident.needs.energy = Math.max(0, resident.needs.energy - ENERGY_COST_FORAGE);
-        node.usesRemaining--;
-
-        // Mark depleted if exhausted
-        if (node.usesRemaining <= 0) {
-          node.depletedAt = this.world.worldTime;
-        }
-
-        // Determine item to give
-        const forageItemType = node.type === 'berry_bush' ? 'wild_berries' : 'spring_water';
-        const forageItemName = node.type === 'berry_bush' ? 'Wild Berries' : 'Spring Water';
-
-        // Add to inventory (stack if existing)
-        const existingForageItem = resident.inventory.find(i => i.type === forageItemType);
-        let forageItemId: string;
-        if (existingForageItem) {
-          existingForageItem.quantity += 1;
-          forageItemId = existingForageItem.id;
-        } else {
-          forageItemId = uuid();
-          resident.inventory.push({
-            id: forageItemId,
-            type: forageItemType,
-            quantity: 1,
-          });
-        }
-
-        // Persist to DB
-        addInventoryItem(resident.id, forageItemType, 1, -1);
-
-        logEvent('forage', resident.id, null, null, resident.x, resident.y, {
-          node_id: nodeId, resource_type: node.type, item_type: forageItemType,
-          uses_remaining: node.usesRemaining,
-        });
-
-        this.sendActionResult(resident, msg, true,
-          `Foraged 1x ${forageItemName}. ${node.usesRemaining}/${node.maxUses} uses remaining.`, {
-          item: { id: forageItemId, type: forageItemType, quantity: 1 },
-          node_uses_remaining: node.usesRemaining,
-          inventory: resident.inventory,
-        });
-
-        sendWebhook(resident, 'forage', {
-          node_id: nodeId,
-          resource_type: node.type,
-          item_type: forageItemType,
-          item_name: forageItemName,
-          uses_remaining: node.usesRemaining,
-          max_uses: node.maxUses,
-          x: resident.x,
-          y: resident.y,
-        });
-        break;
-      }
-
-      case 'get_referral_link': {
-        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'info') {
-          const infoBuilding = getBuildingByType('info');
-          this.sendActionResult(resident, msg, false, `Must be inside ${infoBuilding?.name ?? 'Tourist Information'}`);
-          return;
-        }
-        const refStats = getReferralStats(resident.id, REFERRAL_MATURITY_MS);
-        this.sendActionResult(resident, msg, true, 'Here is your referral link.', {
-          link: `https://${CITY_CONFIG.domain}/quick-start?ref=${resident.passportNo}`,
-          stats: refStats,
-        });
-        break;
-      }
-
-      case 'claim_referrals': {
-        if (!resident.currentBuilding || getBuildingType(resident.currentBuilding) !== 'info') {
-          const infoBuilding = getBuildingByType('info');
-          this.sendActionResult(resident, msg, false, `Must be inside ${infoBuilding?.name ?? 'Tourist Information'}`);
-          return;
-        }
-        const claimable = getClaimableReferrals(resident.id, REFERRAL_MATURITY_MS);
-        if (claimable.length === 0) {
-          const refInfo = getReferralStats(resident.id, REFERRAL_MATURITY_MS);
-          if (refInfo.maturing > 0) {
-            this.sendActionResult(resident, msg, false, `No claimable referrals yet. ${refInfo.maturing} referral(s) still maturing (new residents must survive 1 day).`);
-          } else {
-            this.sendActionResult(resident, msg, false, 'No referrals to claim. Share your referral link to invite new residents!');
-          }
-          return;
-        }
-        const ids = claimable.map(r => r.id);
-        const result = claimReferrals(ids, Date.now());
-        resident.wallet += result.total;
-        logEvent('referral_claimed', resident.id, null, resident.currentBuilding, resident.x, resident.y, {
-          count: result.count,
-          total: result.total,
-          wallet: resident.wallet,
-        });
-        sendWebhook(resident, 'referral_claimed', {
-          count: result.count,
-          total: result.total,
-          wallet: resident.wallet,
-        });
-        resident.pendingNotifications.push(`Claimed ${result.count} referral reward${result.count !== 1 ? 's' : ''} — earned ${CITY_CONFIG.currencySymbol}${result.total}!`);
-        this.sendActionResult(resident, msg, true, `Claimed ${result.count} referral(s).`, {
-          claimed_count: result.count,
-          reward_total: result.total,
-          wallet: resident.wallet,
-        });
-        break;
-      }
-
-      default:
-        this.sendActionResult(resident, msg, false, 'unknown_action');
     }
+  }
+
+  private handleForageActions(resident: ResidentEntity, msg: ClientMessage): void {
+    if (msg.type !== 'forage') return;
+    if (!this.requireAwake(resident, msg)) return;
+    if (resident.needs.energy < ENERGY_COST_FORAGE) {
+      this.sendActionResult(resident, msg, false, 'Not enough energy to forage', { energy_needed: ENERGY_COST_FORAGE, energy_current: resident.needs.energy });
+      return;
+    }
+
+    const nodeId = msg.params?.node_id;
+    if (!nodeId) {
+      this.sendActionResult(resident, msg, false, 'missing node_id');
+      return;
+    }
+
+    const node = this.world.forageableNodes.get(nodeId);
+    if (!node) {
+      this.sendActionResult(resident, msg, false, 'node_not_found');
+      return;
+    }
+
+    const fdx = node.x - resident.x;
+    const fdy = node.y - resident.y;
+    const forageDist = Math.sqrt(fdx * fdx + fdy * fdy);
+    if (forageDist > FORAGE_RANGE) {
+      this.sendActionResult(resident, msg, false, 'Too far from resource node');
+      return;
+    }
+
+    if (node.usesRemaining <= 0) {
+      this.sendActionResult(resident, msg, false, 'This resource is depleted. Try another one.');
+      return;
+    }
+
+    resident.needs.energy = Math.max(0, resident.needs.energy - ENERGY_COST_FORAGE);
+    node.usesRemaining--;
+
+    if (node.usesRemaining <= 0) {
+      node.depletedAt = this.world.worldTime;
+    }
+
+    const forageItemType = node.type === 'berry_bush' ? 'wild_berries' : 'spring_water';
+    const forageItemName = node.type === 'berry_bush' ? 'Wild Berries' : 'Spring Water';
+
+    const existingForageItem = resident.inventory.find(i => i.type === forageItemType);
+    let forageItemId: string;
+    if (existingForageItem) {
+      existingForageItem.quantity += 1;
+      forageItemId = existingForageItem.id;
+    } else {
+      forageItemId = uuid();
+      resident.inventory.push({
+        id: forageItemId,
+        type: forageItemType,
+        quantity: 1,
+      });
+    }
+
+    addInventoryItem(resident.id, forageItemType, 1, -1);
+
+    logEvent('forage', resident.id, null, null, resident.x, resident.y, {
+      node_id: nodeId, resource_type: node.type, item_type: forageItemType,
+      uses_remaining: node.usesRemaining,
+    });
+
+    this.sendActionResult(resident, msg, true,
+      `Foraged 1x ${forageItemName}. ${node.usesRemaining}/${node.maxUses} uses remaining.`, {
+      item: { id: forageItemId, type: forageItemType, quantity: 1 },
+      node_uses_remaining: node.usesRemaining,
+      inventory: resident.inventory,
+    });
+
+    sendWebhook(resident, 'forage', {
+      node_id: nodeId,
+      resource_type: node.type,
+      item_type: forageItemType,
+      item_name: forageItemName,
+      uses_remaining: node.usesRemaining,
+      max_uses: node.maxUses,
+      x: resident.x,
+      y: resident.y,
+    });
+  }
+
+  private async handleAction(resident: ResidentEntity, msg: ClientMessage): Promise<void> {
+    // Request ID deduplication
+    const requestId = ('request_id' in msg ? msg.request_id : undefined) || '';
+    if (requestId) {
+      const now = Date.now();
+      // Clean expired entries (>30s old)
+      for (const [id, ts] of resident.recentRequestIds) {
+        if (now - ts > 30_000) resident.recentRequestIds.delete(id);
+      }
+      // Reject duplicate
+      if (resident.recentRequestIds.has(requestId)) {
+        this.sendActionResult(resident, msg, true, 'duplicate_request');
+        return;
+      }
+      // Record this request
+      resident.recentRequestIds.set(requestId, now);
+    }
+
+    if (resident.isDead) {
+      this.sendActionResult(resident, msg, false, 'resident_dead');
+      return;
+    }
+
+    // Imprisoned residents can only speak, inspect, and submit feedback
+    if (resident.arrestedBy || resident.prisonSentenceEnd) {
+      if (msg.type !== 'inspect' && msg.type !== 'speak' && msg.type !== 'submit_feedback') {
+        this.sendActionResult(resident, msg, false, 'imprisoned');
+        return;
+      }
+    }
+
+    if (this.handleMovementAndSpeechActions(resident, msg)) return;
+    if (this.handleEconomyActions(resident, msg)) return;
+    if (this.handleTourismAndFeedbackActions(resident, msg)) return;
+
+    if (msg.type === 'inspect' || msg.type === 'trade' || msg.type === 'give') {
+      this.handleSocialActions(resident, msg);
+      return;
+    }
+    if (msg.type === 'apply_job' || msg.type === 'quit_job' || msg.type === 'list_jobs' || msg.type === 'write_petition' || msg.type === 'vote_petition' || msg.type === 'list_petitions' || msg.type === 'depart') {
+      this.handleCivicActions(resident, msg);
+      return;
+    }
+    if (msg.type === 'collect_body' || msg.type === 'process_body' || msg.type === 'arrest' || msg.type === 'book_suspect') {
+      this.handleSafetyActions(resident, msg);
+      return;
+    }
+    if (msg.type === 'forage') {
+      this.handleForageActions(resident, msg);
+      return;
+    }
+
+    this.sendActionResult(resident, msg, false, 'unknown_action');
   }
 
   /** Broadcast perception to all connected residents and their spectators */
