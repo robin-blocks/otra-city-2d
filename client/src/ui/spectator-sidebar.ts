@@ -115,7 +115,11 @@ export class SpectatorSidebar {
     const listEl = this.container.querySelector('#spec-agent-list');
     if (!listEl) return;
 
-    const sorted = [...agents].sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = [...agents].sort((a, b) => {
+      const byName = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      if (byName !== 0) return byName;
+      return a.id.localeCompare(b.id);
+    });
     const visibleAgents = this.showDeadAgents ? sorted : sorted.filter(a => !a.is_dead);
     this.updateAgentFilterToggleLabel(agents);
 
