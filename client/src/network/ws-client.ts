@@ -35,14 +35,17 @@ export class WsClient {
       ? `${protocol}//${window.location.host}/ws?spectate=${encodeURIComponent(this.spectateId)}`
       : `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(this.token)}`;
 
-    this.ws = new WebSocket(wsUrl);
+    const socket = new WebSocket(wsUrl);
+    this.ws = socket;
 
-    this.ws.onopen = () => {
+    socket.onopen = () => {
+      if (this.ws !== socket) return; // stale socket
       console.log('[WS] Connected');
       this.connected = true;
     };
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (this.ws !== socket) return; // stale socket
       try {
         const msg: ServerMessage = JSON.parse(event.data);
         this.dispatch(msg);
@@ -51,7 +54,8 @@ export class WsClient {
       }
     };
 
-    this.ws.onclose = (event) => {
+    socket.onclose = (event) => {
+      if (this.ws !== socket) return; // stale socket already replaced
       console.log(`[WS] Disconnected: ${event.code} ${event.reason}`);
       this.connected = false;
       this.ws = null;
@@ -62,7 +66,8 @@ export class WsClient {
       }
     };
 
-    this.ws.onerror = (err) => {
+    socket.onerror = (err) => {
+      if (this.ws !== socket) return; // stale socket
       console.error('[WS] Error:', err);
     };
   }

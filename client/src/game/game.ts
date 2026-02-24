@@ -445,6 +445,12 @@ export class Game {
     if (recentreBtn) {
       recentreBtn.addEventListener('click', () => this.recentre());
     }
+
+    // Click outside modals to close them
+    document.addEventListener('click', () => {
+      if (this.activityModal?.isVisible()) this.activityModal.hide();
+      if (this.conversationModal?.isVisible()) this.conversationModal.hide();
+    });
   }
 
   /** Common spectator perception handler for both live and replay */
@@ -631,6 +637,12 @@ export class Game {
       this.wsClient.onWelcome = async (resident: ResidentState, mapUrl: string, worldTime: number) => {
         console.log(`[Game] Spectating ${resident.passport.preferred_name} (${resident.passport.passport_no})`);
 
+        const url = new URL(window.location.href);
+        if (!url.searchParams.has('replay')) {
+          url.searchParams.set('follow', resident.passport.passport_no);
+          window.history.replaceState({}, '', url.toString());
+        }
+
         this.selfId = resident.id;
         this.selfName = resident.passport.preferred_name;
         this.selfPassport = resident.passport;
@@ -658,8 +670,9 @@ export class Game {
         this.prevInventoryCount = resident.inventory.length;
         this.prevStatus = resident.status;
 
-        // Set conversation modal focus
+        // Set conversation modal focus and backfill recent speech
         this.conversationModal?.setFocusedAgentId(resident.id);
+        this.backfillConversations();
 
         if (!this.mapLoaded) {
           try {
@@ -1398,27 +1411,9 @@ export class Game {
   }
 
   /** Switch spectator stream to a different resident and update URL */
-  private async switchSpectatedResident(residentId: string): Promise<void> {
+  private switchSpectatedResident(residentId: string): void {
     if (!this.spectatorMode) return;
     if (residentId === this.selfId) return;
-
-    let followParam = residentId;
-    try {
-      const res = await fetch(`/api/resident/${encodeURIComponent(residentId)}`);
-      if (res.ok) {
-        const data = await res.json() as { passport_no?: string };
-        if (data.passport_no) followParam = data.passport_no;
-      }
-    } catch {
-      // Best effort only — keep resident id fallback in URL.
-    }
-
-    const url = new URL(window.location.href);
-    url.searchParams.set('follow', followParam);
-    url.searchParams.delete('replay');
-    url.searchParams.delete('model');
-    url.searchParams.delete('api');
-    window.history.pushState({}, '', url.toString());
 
     this.activityModal?.clear();
     this.conversationModal?.clear();
@@ -1481,6 +1476,35 @@ export class Game {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  /** Fetch recent speech history and backfill conversation modal */
+  private async backfillConversations(): Promise<void> {
+    if (!this.conversationModal) return;
+    try {
+      const res = await fetch(`/api/speech?limit=50&resident=${encodeURIComponent(this.selfId)}`);
+      if (!res.ok) return;
+      const { speech } = await res.json() as {
+        speech: Array<{
+          timestamp: number; speaker_id: string; speaker_name: string;
+          text: string; volume: string;
+          to_id?: string; to_name?: string;
+        }>;
+      };
+      for (const msg of speech) {
+        this.conversationModal.addMessage({
+          speakerId: msg.speaker_id,
+          speakerName: msg.speaker_name,
+          text: msg.text,
+          volume: msg.volume,
+          toId: msg.to_id,
+          toName: msg.to_name,
+          timestamp: msg.timestamp,
+        });
+      }
+    } catch {
+      // Non-critical — backfill failure is fine
+    }
   }
 
   private addEventFeedItem(text: string): void {

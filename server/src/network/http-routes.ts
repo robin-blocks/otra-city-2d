@@ -4,7 +4,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { signToken, verifyToken } from '../auth/jwt.js';
 import { v4 as uuidv4 } from 'uuid';
-import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, updateResidentWebhookUrl, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards, getReferralCount, insertReferral, updateReferredBy, getRecentReferrals, getTotalReferralRewards, getConversationTurns, getConversationSummary, getConversationHistory, getConversationPartners, insertFeedback, getRecentFeedback, getReputationStats, getEventsSince } from '../db/queries.js';
+import { createResident, getResident, getResidentByPassport, addInventoryItem, getRecentFeedEvents, getOpenPetitions, getLaws, getRecentEventsForResident, updateResidentBio, updateResidentWebhookUrl, getAllAliveResidents, getRecentGithubClaims, getTotalGithubRewards, getReferralCount, insertReferral, updateReferredBy, getRecentReferrals, getTotalReferralRewards, getConversationTurns, getConversationSummary, getConversationHistory, getConversationPartners, insertFeedback, getRecentFeedback, getReputationStats, getEventsSince, getRecentSpeech } from '../db/queries.js';
 import { consumeFeedbackToken } from './feedback.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
 import { listAvailableJobs } from '../economy/jobs.js';
@@ -184,6 +184,26 @@ export function handleHttpRequest(
     });
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=5' });
     res.end(JSON.stringify({ events: feed }));
+    return true;
+  }
+
+  // GET /api/speech — Recent speech for spectator conversation backfill
+  if (req.method === 'GET' && url.pathname === '/api/speech') {
+    const limit = Math.min(Number(url.searchParams.get('limit') || 50), 100);
+    const residentId = url.searchParams.get('resident') || undefined;
+    const rows = getRecentSpeech(limit, residentId);
+    // Reverse so oldest-first (client appends in order)
+    const speech = rows.reverse().map(r => ({
+      timestamp: r.timestamp,
+      speaker_id: r.speaker_id,
+      speaker_name: r.speaker_name,
+      text: r.text,
+      volume: r.volume || 'normal',
+      to_id: r.to_id || undefined,
+      to_name: r.to_name || undefined,
+    }));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=10' });
+    res.end(JSON.stringify({ speech }));
     return true;
   }
 

@@ -11,7 +11,11 @@ export class ActivityModal {
     this.body = document.getElementById('spec-activity-body')!;
     this.btn = document.getElementById('spec-btn-activity')!;
 
-    this.btn.addEventListener('click', () => this.toggle());
+    this.btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggle();
+    });
+    this.modal.addEventListener('click', (e) => e.stopPropagation());
     document.getElementById('spec-activity-close')?.addEventListener('click', () => this.hide());
     this.renderEmptyState();
   }

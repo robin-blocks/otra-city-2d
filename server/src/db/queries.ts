@@ -435,6 +435,43 @@ export function getRecentFeedEvents(limit: number = 30): FeedEventRow[] {
   `).all(...FEED_EVENT_TYPES, limit) as FeedEventRow[];
 }
 
+// === Recent speech for spectator backfill ===
+
+export interface SpeechRow {
+  timestamp: number;
+  speaker_id: string;
+  speaker_name: string;
+  to_id: string | null;
+  to_name: string | null;
+  text: string;
+  volume: string;
+}
+
+export function getRecentSpeech(limit: number = 50, residentId?: string): SpeechRow[] {
+  const where = residentId
+    ? "WHERE e.type = 'speak' AND (e.resident_id = ? OR e.target_id = ?)"
+    : "WHERE e.type = 'speak'";
+  const params = residentId
+    ? [residentId, residentId, limit]
+    : [limit];
+  return getDb().prepare(`
+    SELECT
+      e.timestamp,
+      e.resident_id AS speaker_id,
+      r.preferred_name AS speaker_name,
+      e.target_id AS to_id,
+      t.preferred_name AS to_name,
+      json_extract(e.data_json, '$.text') AS text,
+      json_extract(e.data_json, '$.volume') AS volume
+    FROM events e
+    LEFT JOIN residents r ON e.resident_id = r.id
+    LEFT JOIN residents t ON e.target_id = t.id
+    ${where}
+    ORDER BY e.timestamp DESC
+    LIMIT ?
+  `).all(...params) as SpeechRow[];
+}
+
 // === Conversation analytics queries ===
 
 export function getConversationTurns(options: {
