@@ -2,9 +2,13 @@
 
 import { Command } from 'commander';
 import { resolve } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { loadManifest } from './harness/config.js';
 import { Orchestrator } from './harness/orchestrator.js';
+import { analyzeRun } from './harness/perception-analyzer.js';
+import { scoreAgents } from './harness/scorer.js';
+import { writeResults } from './harness/results-writer.js';
+import { startApiServer } from './api/server.js';
 
 const DEFAULT_DATA_DIR = resolve(import.meta.dirname, '..', 'data', 'runs');
 
@@ -55,9 +59,8 @@ program
       showRunStatus(runDir);
     } else {
       // List all runs
-      const { readdirSync } = require('fs') as typeof import('fs');
       try {
-        const runs = readdirSync(dataDir).filter((f: string) => f.startsWith('run-'));
+        const runs = readdirSync(dataDir).filter(f => f.startsWith('run-'));
         if (runs.length === 0) {
           console.log('No runs found.');
           return;
@@ -101,6 +104,58 @@ program
       }
     }
     console.log(`Stopped ${killed} agent(s).`);
+  });
+
+program
+  .command('score')
+  .description('Compute Otra Scores for a completed run')
+  .requiredOption('-r, --run <run_id>', 'Run ID to score')
+  .option('-d, --data-dir <path>', 'Data directory', DEFAULT_DATA_DIR)
+  .action(async (opts: { run: string; dataDir: string }) => {
+    try {
+      const runDir = resolve(opts.dataDir, opts.run);
+      if (!existsSync(runDir)) {
+        console.error(`Run directory not found: ${runDir}`);
+        process.exit(1);
+      }
+
+      // Read manifest for run duration and model display names
+      const manifestFile = resolve(runDir, 'manifest.json');
+      if (!existsSync(manifestFile)) {
+        console.error(`manifest.json not found in ${runDir}`);
+        process.exit(1);
+      }
+      const manifest = JSON.parse(readFileSync(manifestFile, 'utf-8')) as {
+        run_id: string;
+        duration_hours: number;
+        models: Array<{ model_id: string; display_name: string }>;
+      };
+
+      const displayNames = new Map(manifest.models.map(m => [m.model_id, m.display_name]));
+
+      // Analyze perception data
+      console.log(`\nAnalyzing perception data for ${opts.run}...`);
+      const analyses = await analyzeRun(runDir, manifest.duration_hours);
+
+      // Score agents
+      console.log(`\nComputing scores...`);
+      const scores = scoreAgents(analyses, manifest.duration_hours, runDir, displayNames);
+
+      // Write results
+      writeResults(runDir, manifest.run_id, manifest.duration_hours, scores);
+    } catch (err) {
+      console.error('Scoring failed:', err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('serve')
+  .description('Start the Otra Bench API server')
+  .option('-d, --data-dir <path>', 'Data directory', DEFAULT_DATA_DIR)
+  .option('-p, --port <port>', 'Port to listen on', '3460')
+  .action((opts: { dataDir: string; port: string }) => {
+    startApiServer(resolve(opts.dataDir), parseInt(opts.port, 10));
   });
 
 function showRunStatus(runDir: string, compact = false): void {
