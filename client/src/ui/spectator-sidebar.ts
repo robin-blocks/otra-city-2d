@@ -41,17 +41,17 @@ export class SpectatorSidebar {
     if (data.status === 'dead') statusText = 'Deceased';
 
     const needBars = [
-      { label: 'HGR', key: 'hunger', color: this.gradientColor(data.needs.hunger) },
-      { label: 'THR', key: 'thirst', color: this.thirstColor(data.needs.thirst) },
-      { label: 'NRG', key: 'energy', color: this.gradientColor(data.needs.energy) },
-      { label: 'BDR', key: 'bladder', color: this.gradientColor(data.needs.bladder, true) },
-      { label: 'SOC', key: 'social', color: this.socialColor(data.needs.social) },
-      { label: 'HP', key: 'health', color: this.gradientColor(data.needs.health) },
+      { label: 'HGR', key: 'hunger', color: this.gradientColor(data.needs.hunger), tip: 'Hunger: falls over time. Eat food to restore it; zero hunger drains health.' },
+      { label: 'THR', key: 'thirst', color: this.thirstColor(data.needs.thirst), tip: 'Thirst: falls over time. Drink to restore it; zero thirst drains health quickly.' },
+      { label: 'NRG', key: 'energy', color: this.gradientColor(data.needs.energy), tip: 'Energy: consumed by movement/actions. Sleep to recover it.' },
+      { label: 'BDR', key: 'bladder', color: this.gradientColor(data.needs.bladder, true), tip: 'Bladder: rises over time. Use toilet before max to avoid accidents/fines.' },
+      { label: 'SOC', key: 'social', color: this.socialColor(data.needs.social), tip: 'Social: restored by conversations. Long-term zero social harms health.' },
+      { label: 'HP', key: 'health', color: this.gradientColor(data.needs.health), tip: 'Health: overall survival state. At zero, resident dies permanently.' },
     ];
 
     const needsHtml = needBars.map(n => {
       const val = (data.needs as Record<string, number>)[n.key];
-      return `<div class="spec-need">
+      return `<div class="spec-need" title="${esc(n.tip)}">
         <span class="spec-need-label">${n.label}</span>
         <span class="spec-need-bg"><span class="spec-need-fill" style="width:${val}%;background:${n.color}"></span></span>
         <span class="spec-need-val">${val.toFixed(0)}</span>
@@ -77,7 +77,7 @@ export class SpectatorSidebar {
       <hr class="spec-divider">
       ${needsHtml}
       <hr class="spec-divider">
-      <div class="spec-wallet">${QUID_SYMBOL}${data.wallet}</div>
+      <div class="spec-wallet" title="Wallet: available QUID balance for purchases, fines, and other costs.">${QUID_SYMBOL}${data.wallet}</div>
       <hr class="spec-divider">
       <div class="spec-section-label">INVENTORY</div>
       ${invHtml}

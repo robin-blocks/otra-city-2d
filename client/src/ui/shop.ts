@@ -30,6 +30,7 @@ export class ShopUI {
     this.overlay = document.getElementById('shop-overlay')!;
     this.itemsEl = document.getElementById('shop-items')!;
     this.walletEl = document.getElementById('shop-wallet')!;
+    this.walletEl.title = 'Wallet: your available QUID balance for buying items.';
   }
 
   show(wallet: number): void {

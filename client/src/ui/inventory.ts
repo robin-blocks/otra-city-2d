@@ -24,6 +24,7 @@ export class InventoryUI {
     this.overlay = document.getElementById('inventory-overlay')!;
     this.listEl = document.getElementById('inv-list')!;
     this.walletEl = document.getElementById('inv-wallet')!;
+    this.walletEl.title = 'Wallet: your available QUID balance.';
   }
 
   toggle(inventory: InventoryItem[], wallet: number): void {
