@@ -113,6 +113,12 @@ export class WsServer {
       return;
     }
 
+    // Close previous socket if agent reconnects before old one closes
+    const prevWs = this.connections.get(resident.id);
+    if (prevWs && prevWs !== ws && prevWs.readyState <= WebSocket.OPEN) {
+      prevWs.close(4000, 'Replaced by new connection');
+    }
+
     // Bind WebSocket to resident
     resident.ws = ws;
     this.connections.set(resident.id, ws);
@@ -184,6 +190,9 @@ export class WsServer {
     });
 
     ws.on('close', () => {
+      // Stale socket guard: if a newer socket replaced this one, skip cleanup
+      if (resident.ws !== ws) return;
+
       // Release suspect if officer disconnects while carrying one
       if (resident.carryingSuspectId) {
         const suspect = this.world.residents.get(resident.carryingSuspectId);
