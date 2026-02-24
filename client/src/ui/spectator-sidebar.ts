@@ -21,6 +21,9 @@ export interface AgentListEntry {
 
 export class SpectatorSidebar {
   private container: HTMLElement;
+  private showDeadAgents = false;
+  private lastAgents: AgentListEntry[] = [];
+  private lastFocusedId = '';
   onAgentClick: ((agentId: string) => void) | null = null;
 
   constructor(container: HTMLElement) {
@@ -87,19 +90,41 @@ export class SpectatorSidebar {
       this.container.innerHTML = `
         <div id="spec-focused-section">${html}</div>
         <hr class="spec-divider">
-        <div class="spec-section-label">AGENTS</div>
+        <div class="spec-section-header">
+          <div class="spec-section-label">AGENTS</div>
+          <button
+            id="spec-agent-filter-toggle"
+            class="spec-agent-filter-toggle"
+            type="button"
+            aria-pressed="false"
+            title="Show dead agents"
+          >
+            Show dead
+          </button>
+        </div>
         <div id="spec-agent-list" class="spec-agent-list"></div>
       `;
+      this.bindAgentFilterToggle();
     }
   }
 
   updateAgentList(agents: AgentListEntry[], focusedId: string): void {
+    this.lastAgents = agents;
+    this.lastFocusedId = focusedId;
+
     const listEl = this.container.querySelector('#spec-agent-list');
     if (!listEl) return;
 
     const sorted = [...agents].sort((a, b) => a.name.localeCompare(b.name));
+    const visibleAgents = this.showDeadAgents ? sorted : sorted.filter(a => !a.is_dead);
+    this.updateAgentFilterToggleLabel(agents);
 
-    listEl.innerHTML = sorted.map(a => {
+    if (visibleAgents.length === 0) {
+      listEl.innerHTML = '<div class="spec-inv-empty">No live agents visible.</div>';
+      return;
+    }
+
+    listEl.innerHTML = visibleAgents.map(a => {
       const fwStyle = getFrameworkStyle(a.framework);
       const fwBadge = fwStyle
         ? `<span class="spec-agent-fw" style="background:${esc(fwStyle.cssColor)}">${esc(fwStyle.label)}</span>`
@@ -121,9 +146,34 @@ export class SpectatorSidebar {
     listEl.querySelectorAll('.spec-agent-entry').forEach(el => {
       el.addEventListener('click', () => {
         const id = (el as HTMLElement).dataset.agentId;
-        if (id && this.onAgentClick) this.onAgentClick(id);
+      if (id && this.onAgentClick) this.onAgentClick(id);
       });
     });
+  }
+
+  private bindAgentFilterToggle(): void {
+    const btn = this.container.querySelector('#spec-agent-filter-toggle') as HTMLButtonElement | null;
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      this.showDeadAgents = !this.showDeadAgents;
+      this.updateAgentFilterToggleLabel(this.lastAgents);
+      this.updateAgentList(this.lastAgents, this.lastFocusedId);
+    });
+  }
+
+  private updateAgentFilterToggleLabel(agents: AgentListEntry[]): void {
+    const btn = this.container.querySelector('#spec-agent-filter-toggle') as HTMLButtonElement | null;
+    if (!btn) return;
+    const deadCount = agents.filter(a => a.is_dead).length;
+    if (this.showDeadAgents) {
+      btn.textContent = 'Hide dead';
+      btn.setAttribute('title', 'Hide dead agents');
+      btn.setAttribute('aria-pressed', 'true');
+    } else {
+      btn.textContent = deadCount > 0 ? `Show dead (${deadCount})` : 'Show dead';
+      btn.setAttribute('title', 'Show dead agents');
+      btn.setAttribute('aria-pressed', 'false');
+    }
   }
 
   // Color gradient functions (same logic as Game)

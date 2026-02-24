@@ -23,6 +23,7 @@ export class ConversationModal {
 
     this.btn.addEventListener('click', () => this.toggle());
     document.getElementById('spec-conversation-close')?.addEventListener('click', () => this.hide());
+    this.renderEmptyState();
   }
 
   show(): void {
@@ -46,7 +47,7 @@ export class ConversationModal {
 
   clear(): void {
     this.messages = [];
-    this.body.innerHTML = '';
+    this.renderEmptyState();
   }
 
   setFocusedAgentId(id: string): void {
@@ -54,6 +55,9 @@ export class ConversationModal {
   }
 
   addMessage(msg: ChatMessage): void {
+    if (this.messages.length === 0) {
+      this.body.innerHTML = '';
+    }
     this.messages.push(msg);
     if (this.messages.length > MAX_MESSAGES) {
       this.messages.shift();
@@ -78,6 +82,10 @@ export class ConversationModal {
 
     this.body.appendChild(el);
     this.body.scrollTop = this.body.scrollHeight;
+  }
+
+  private renderEmptyState(): void {
+    this.body.innerHTML = '<div class="spec-activity-item">No conversations yet.</div>';
   }
 }
 

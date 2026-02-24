@@ -195,6 +195,9 @@ export class Game {
       this.camera.setScreenSize(this.app.screen.width, this.app.screen.height);
     });
 
+    // Desktop mouse-wheel zoom
+    this.setupWheelZoom();
+
     // Game loop
     this.app.ticker.add(() => {
       const dt = this.app.ticker.deltaMS / 1000;
@@ -430,14 +433,7 @@ export class Game {
     // Create spectator UI components
     this.sidebar = new SpectatorSidebar(document.getElementById('spec-sidebar')!);
     this.sidebar.onAgentClick = (agentId: string) => {
-      if (agentId === this.selfId) {
-        this.recentre();
-      } else {
-        const target = this.lastVisible.find(v => v.type === 'resident' && v.id === agentId);
-        if (target && target.type === 'resident') {
-          this.followResident(agentId, target.name, target.agent_framework ?? null);
-        }
-      }
+      this.switchSpectatedResident(agentId);
     };
 
     this.timeline = new SpectatorTimeline(document.getElementById('spec-bottom')!);
@@ -483,6 +479,7 @@ export class Game {
 
     for (const notif of data.notifications) {
       this.addEventFeedItem(notif);
+      this.activityModal?.addEvent(notif, data.world_time);
     }
 
     // State-diff event detection (also feeds activity modal)
@@ -1287,6 +1284,20 @@ export class Game {
 
   // Spectator inventory is now handled by SpectatorSidebar
 
+  /** Mouse-wheel zoom for desktop */
+  private setupWheelZoom(): void {
+    const canvas = this.app.canvas;
+    canvas.addEventListener('wheel', (e) => {
+      // Prevent page zoom/scroll and keep interaction on the canvas.
+      e.preventDefault();
+
+      const currentZoom = this.camera.getZoom();
+      // Exponential scaling gives consistent feel across trackpads and wheels.
+      const zoomFactor = Math.exp(-e.deltaY * 0.0015);
+      this.camera.setZoom(currentZoom * zoomFactor);
+    }, { passive: false });
+  }
+
   /** Set up click-and-drag-to-scroll on the canvas (spectator mode only) */
   private setupDragToScroll(): void {
     const canvas = this.app.canvas;
@@ -1384,6 +1395,35 @@ export class Game {
     this.camera.followPosition(this.selfX, this.selfY);
     this.updateSpectatorBanner();
     this.updateRecentreButton();
+  }
+
+  /** Switch spectator stream to a different resident and update URL */
+  private async switchSpectatedResident(residentId: string): Promise<void> {
+    if (!this.spectatorMode) return;
+    if (residentId === this.selfId) return;
+
+    let followParam = residentId;
+    try {
+      const res = await fetch(`/api/resident/${encodeURIComponent(residentId)}`);
+      if (res.ok) {
+        const data = await res.json() as { passport_no?: string };
+        if (data.passport_no) followParam = data.passport_no;
+      }
+    } catch {
+      // Best effort only — keep resident id fallback in URL.
+    }
+
+    const url = new URL(window.location.href);
+    url.searchParams.set('follow', followParam);
+    url.searchParams.delete('replay');
+    url.searchParams.delete('model');
+    url.searchParams.delete('api');
+    window.history.pushState({}, '', url.toString());
+
+    this.activityModal?.clear();
+    this.conversationModal?.clear();
+    this.wsClient.disconnect();
+    this.wsClient.connectSpectator(residentId);
   }
 
   /** Switch follow target to a different resident */

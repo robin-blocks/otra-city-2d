@@ -13,6 +13,7 @@ export class ActivityModal {
 
     this.btn.addEventListener('click', () => this.toggle());
     document.getElementById('spec-activity-close')?.addEventListener('click', () => this.hide());
+    this.renderEmptyState();
   }
 
   show(): void {
@@ -36,10 +37,13 @@ export class ActivityModal {
 
   clear(): void {
     this.events = [];
-    this.body.innerHTML = '';
+    this.renderEmptyState();
   }
 
   addEvent(text: string, gameTime?: number): void {
+    if (this.events.length === 0) {
+      this.body.innerHTML = '';
+    }
     this.events.push(text);
     if (this.events.length > MAX_EVENTS) {
       this.events.shift();
@@ -62,6 +66,10 @@ export class ActivityModal {
     item.innerHTML = `${timeStr}${esc(text)}`;
     this.body.appendChild(item);
     this.body.scrollTop = this.body.scrollHeight;
+  }
+
+  private renderEmptyState(): void {
+    this.body.innerHTML = '<div class="spec-activity-item">No activity yet.</div>';
   }
 }
 
