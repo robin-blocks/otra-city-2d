@@ -12,6 +12,7 @@ import { InventoryUI } from '../ui/inventory.js';
 import { ShopUI } from '../ui/shop.js';
 import { InspectUI } from '../ui/inspect.js';
 import { BuildingInfoUI } from '../ui/building-info.js';
+import { getFrameworkStyle } from '../ui/framework-colors.js';
 
 export class Game {
   private app!: Application;
@@ -49,6 +50,7 @@ export class Game {
   private originalFollowId = '';
   private currentFollowId = '';
   private currentFollowName = '';
+  private currentFollowFramework: string | null = null;
   private spectatorKeys = new Set<string>();
   private lastVisible: VisibleEntity[] = [];
 
@@ -137,17 +139,15 @@ export class Game {
       if (this.dragMoved) return; // Ignore clicks that were part of a drag
 
       if (this.spectatorMode) {
-        // Spectator: click to inspect resident (fetch full data including bio)
+        // Spectator: click to follow this resident
         if (residentId === this.selfId) {
-          this.input.uiOpen = true;
-          this.inspectUI.showById(residentId, this.selfPassport?.preferred_name ?? undefined);
+          this.recentre();
         } else {
           const target = this.lastVisible.find(
             v => v.type === 'resident' && v.id === residentId,
           );
           if (target && target.type === 'resident') {
-            this.input.uiOpen = true;
-            this.inspectUI.showOther(target);
+            this.followResident(residentId, target.name, target.agent_framework ?? null);
           }
         }
       } else {
@@ -396,6 +396,10 @@ export class Game {
       if (movementKeys.has(key)) {
         e.preventDefault(); // Prevent page scrolling from arrow keys
       }
+      if (key === 'tab') {
+        e.preventDefault();
+        this.cycleFollowTarget();
+      }
       if (e.key === 'Escape') {
         if (this.inspectUI.isVisible()) this.inspectUI.hide();
         if (this.buildingInfoUI.isVisible()) this.buildingInfoUI.hide();
@@ -441,6 +445,7 @@ export class Game {
         this.originalFollowId = resident.id;
         this.currentFollowId = resident.id;
         this.currentFollowName = resident.passport.preferred_name;
+        this.currentFollowFramework = resident.agent_framework ?? null;
 
         // Init state-diff tracking
         this.prevSleeping = resident.is_sleeping;
@@ -601,6 +606,9 @@ export class Game {
       let selfCondition: 'healthy' | 'struggling' | 'critical' = 'healthy';
       if (self.health < 20 || self.hunger <= 0 || self.thirst <= 0) selfCondition = 'critical';
       else if (self.hunger < 20 || self.thirst < 20 || self.energy < 10 || self.health < 50) selfCondition = 'struggling';
+
+      // Set follow indicator for spectator mode
+      this.residentRenderer.followedResidentId = this.spectatorMode ? this.currentFollowId : null;
 
       // Pass predicted position for self — this is instant
       this.residentRenderer.updateResidents(
@@ -1111,9 +1119,46 @@ export class Game {
   private recentre(): void {
     this.currentFollowId = this.originalFollowId;
     this.currentFollowName = this.selfName;
+    this.currentFollowFramework = this.selfFramework;
     this.camera.followPosition(this.selfX, this.selfY);
     this.updateSpectatorBanner();
     this.updateRecentreButton();
+  }
+
+  /** Switch follow target to a different resident */
+  private followResident(id: string, name: string, framework: string | null): void {
+    this.currentFollowId = id;
+    this.currentFollowName = name;
+    this.currentFollowFramework = framework;
+    const target = this.lastVisible.find(v => v.type === 'resident' && v.id === id);
+    if (target) {
+      this.camera.followPosition(target.x, target.y);
+    }
+    this.updateSpectatorBanner();
+    this.updateRecentreButton();
+  }
+
+  /** Cycle follow target through visible agents (Tab key) */
+  private cycleFollowTarget(): void {
+    if (!this.lastPerception) return;
+    const residents = this.lastPerception.visible
+      .filter((v): v is VisibleResident => v.type === 'resident')
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (residents.length === 0) return;
+
+    // Build ordered list: self first, then sorted visible residents
+    const allIds = [this.selfId, ...residents.map(r => r.id)];
+    const currentIdx = allIds.indexOf(this.currentFollowId);
+    const nextIdx = (currentIdx + 1) % allIds.length;
+
+    if (allIds[nextIdx] === this.selfId) {
+      this.recentre();
+    } else {
+      const target = residents.find(r => r.id === allIds[nextIdx]);
+      if (target) {
+        this.followResident(target.id, target.name, target.agent_framework ?? null);
+      }
+    }
   }
 
   /** Show/hide the re-centre button based on current state */
@@ -1129,12 +1174,19 @@ export class Game {
     const banner = document.getElementById('spectator-banner');
     if (!banner) return;
 
-    let html: string;
-    if (this.currentFollowId === this.originalFollowId) {
-      html = `Spectating: ${this.escapeHtml(this.selfName)}`;
-    } else {
-      html = `Spectating: ${this.escapeHtml(this.currentFollowName)}`;
+    const name = this.currentFollowId === this.originalFollowId
+      ? this.selfName : this.currentFollowName;
+    let html = `Spectating: ${this.escapeHtml(name)}`;
+
+    const fw = this.currentFollowId === this.originalFollowId
+      ? this.selfFramework : this.currentFollowFramework;
+    if (fw) {
+      const fwStyle = getFrameworkStyle(fw);
+      if (fwStyle) {
+        html += ` <span style="background:${fwStyle.cssColor}; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px; color: #fff;">${this.escapeHtml(fwStyle.label)}</span>`;
+      }
     }
+
     html += ` · <a href="/quick-start" class="spectator-cta">Connect your own bot →</a>`;
     banner.innerHTML = html;
   }

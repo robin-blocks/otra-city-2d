@@ -61,6 +61,7 @@ export class ResidentRenderer {
   private parent: Container;
   private rendered = new Map<string, RenderedResident>();
   onResidentClick: ((residentId: string) => void) | null = null;
+  followedResidentId: string | null = null;
 
   constructor(parent: Container) {
     this.parent = parent;
@@ -266,6 +267,19 @@ export class ResidentRenderer {
       if (isArrested) {
         rr.body.circle(0, 16, 4);
         rr.body.stroke({ width: 2, color: 0x888888 });
+      }
+
+      // Colored ground marker (framework-colored oval at feet)
+      const markerFw = getFrameworkStyle(agentFramework);
+      const markerColor = markerFw ? markerFw.color : 0x555555;
+      rr.body.ellipse(0, 12, 10, 5);
+      rr.body.fill({ color: markerColor, alpha: 0.45 });
+
+      // Follow selection ring (bright pulsing ring for followed agent)
+      if (this.followedResidentId === id) {
+        const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
+        rr.body.ellipse(0, 12, 14, 7);
+        rr.body.stroke({ width: 2.5, color: 0xffffff, alpha: pulse });
       }
     }
   }
