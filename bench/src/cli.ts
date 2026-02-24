@@ -9,6 +9,7 @@ import { analyzeRun } from './harness/perception-analyzer.js';
 import { scoreAgents } from './harness/scorer.js';
 import { writeResults } from './harness/results-writer.js';
 import { startApiServer } from './api/server.js';
+import { extractAllReplayFrames } from './replay/extractor.js';
 
 const DEFAULT_DATA_DIR = resolve(import.meta.dirname, '..', 'data', 'runs');
 
@@ -147,6 +148,23 @@ program
       console.error('Scoring failed:', err instanceof Error ? err.message : err);
       process.exit(1);
     }
+  });
+
+program
+  .command('extract-replay')
+  .description('Extract replay frames from perception data for all agents in a run')
+  .requiredOption('-r, --run <run_id>', 'Run ID to extract replay for')
+  .option('-d, --data-dir <path>', 'Data directory', DEFAULT_DATA_DIR)
+  .action((opts: { run: string; dataDir: string }) => {
+    const runDir = resolve(opts.dataDir, opts.run);
+    if (!existsSync(runDir)) {
+      console.error(`Run directory not found: ${runDir}`);
+      process.exit(1);
+    }
+
+    console.log(`\nExtracting replay frames for ${opts.run}...\n`);
+    extractAllReplayFrames(runDir);
+    console.log(`\nDone. Run 'otra-bench serve' to serve replay data.`);
   });
 
 program

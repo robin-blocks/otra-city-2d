@@ -80,6 +80,7 @@ export class ResidentRenderer {
     selfHairColor: number,
     selfFramework: string | null,
     selfCondition?: 'healthy' | 'struggling' | 'critical',
+    selfIsUsingToilet?: boolean,
   ): void {
     const activeIds = new Set<string>();
 
@@ -87,7 +88,7 @@ export class ResidentRenderer {
     activeIds.add(selfId);
     this.renderResident(selfId, selfName, selfX, selfY, selfFacing, selfAction,
       selfSkinTone, 0, selfHairColor, false, true, selfFramework, selfCondition,
-      false, false, false);
+      false, false, false, selfIsUsingToilet ?? false);
 
     // Render visible others — set target, interpolate smoothly
     for (const r of visible) {
@@ -97,7 +98,7 @@ export class ResidentRenderer {
         r.id, r.name, r.x, r.y, r.facing, r.action,
         r.appearance.skin_tone, r.appearance.hair_style, r.appearance.hair_color,
         r.is_dead, false, r.agent_framework ?? null, r.condition,
-        r.is_police ?? false, r.is_wanted ?? false, r.is_arrested ?? false,
+        r.is_police ?? false, r.is_wanted ?? false, r.is_arrested ?? false, r.is_using_toilet ?? false,
       );
     }
 
@@ -145,6 +146,7 @@ export class ResidentRenderer {
     agentFramework: string | null,
     condition?: 'healthy' | 'struggling' | 'critical',
     isPolice?: boolean, isWanted?: boolean, isArrested?: boolean,
+    isUsingToilet?: boolean,
   ): void {
     let rr = this.rendered.get(id);
 
@@ -280,6 +282,24 @@ export class ResidentRenderer {
         const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
         rr.body.ellipse(0, 12, 14, 7);
         rr.body.stroke({ width: 2.5, color: 0xffffff, alpha: pulse });
+      }
+    }
+
+    if (isUsingToilet) {
+      this.drawToiletCensor(rr.body);
+    }
+  }
+
+  private drawToiletCensor(body: Graphics): void {
+    body.roundRect(-9, -16, 18, 20, 3);
+    body.fill({ color: 0x000000, alpha: 0.55 });
+
+    const blockSize = 4;
+    for (let y = -14; y <= 2; y += blockSize) {
+      for (let x = -7; x <= 7; x += blockSize) {
+        const shade = (x + y) % 8 === 0 ? 0x888888 : 0x444444;
+        body.rect(x, y, blockSize - 1, blockSize - 1);
+        body.fill({ color: shade, alpha: 0.85 });
       }
     }
   }

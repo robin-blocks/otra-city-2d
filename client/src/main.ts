@@ -22,12 +22,27 @@ async function start() {
 
   const landing = document.getElementById('landing')!;
   const hud = document.getElementById('hud')!;
-  const spectatorBanner = document.getElementById('spectator-banner')!;
   const eventFeed = document.getElementById('event-feed')!;
   const activityFeed = document.getElementById('activity-feed')!;
 
-  // Check for ?follow= param (spectator mode)
   const urlParams = new URLSearchParams(window.location.search);
+
+  // Check for ?replay= param (replay mode)
+  const replayRunId = urlParams.get('replay');
+  const replayModel = urlParams.get('model');
+  const replayApi = urlParams.get('api');
+  if (replayRunId && replayModel && replayApi) {
+    landing.style.display = 'none';
+    try {
+      await game.replay(replayApi, replayRunId, replayModel);
+      track('view_replay', { run_id: replayRunId, model: replayModel });
+    } catch (err) {
+      console.error('Failed to start replay:', err);
+    }
+    return;
+  }
+
+  // Check for ?follow= param (spectator mode)
   const followPassport = urlParams.get('follow');
   if (followPassport) {
     landing.style.display = 'none';
@@ -37,31 +52,13 @@ async function start() {
       if (!res.ok) throw new Error('Resident not found');
       const resident = await res.json();
 
-      // Build banner with optional framework badge and death indicator
-      const isDeceased = resident.status === 'DECEASED';
-      let bannerHtml = `Spectating: ${escapeHtml(resident.preferred_name)} (${escapeHtml(resident.passport_no)})`;
-      if (isDeceased) {
-        bannerHtml += ` <span style="background:#c33; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px; color: #fff;">DECEASED</span>`;
-      }
-      if (resident.agent_framework) {
-        const fwStyle = getFrameworkStyle(resident.agent_framework);
-        if (fwStyle) {
-          bannerHtml += ` <span style="background:${fwStyle.cssColor}; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px; color: #fff;">${escapeHtml(fwStyle.label)}</span>`;
-        }
-      }
-      bannerHtml += ` · <a href="/quick-start" class="spectator-cta">Connect your own bot →</a>`;
-      spectatorBanner.innerHTML = bannerHtml;
-
       await game.spectate(resident.id);
       track('view_spectator', { passport_no: resident.passport_no });
-
-      hud.style.display = 'block';
-      spectatorBanner.style.display = 'block';
-      eventFeed.style.display = 'block';
     } catch (err) {
       console.error('Failed to spectate:', err);
-      spectatorBanner.style.display = 'block';
-      spectatorBanner.textContent = `Could not find resident ${followPassport}`;
+      // Show a simple error in the spectator layout
+      const sidebar = document.getElementById('spec-sidebar');
+      if (sidebar) sidebar.textContent = `Could not find resident ${followPassport}`;
     }
     return;
   }
@@ -112,8 +109,6 @@ interface FeedEvent {
 }
 
 async function autoSpectate(): Promise<void> {
-  const spectatorBanner = document.getElementById('spectator-banner')!;
-
   try {
     const res = await fetch('/api/feed');
     if (!res.ok) { await game.loadMapOnly(); return; }
@@ -129,20 +124,8 @@ async function autoSpectate(): Promise<void> {
         const resident = await resRes.json();
         if (resident.status !== 'ALIVE') continue;
 
-        // Build spectator banner
-        let bannerHtml = `Spectating: ${escapeHtml(resident.preferred_name)} (${escapeHtml(resident.passport_no)})`;
-        if (resident.agent_framework) {
-          const fwStyle = getFrameworkStyle(resident.agent_framework);
-          if (fwStyle) {
-            bannerHtml += ` <span style="background:${fwStyle.cssColor}; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px; color: #fff;">${escapeHtml(fwStyle.label)}</span>`;
-          }
-        }
-        bannerHtml += ` · <a href="/quick-start" class="spectator-cta">Connect your own bot →</a>`;
-        spectatorBanner.innerHTML = bannerHtml;
-
         await game.spectate(resident.id);
         track('auto_spectate', { passport_no: resident.passport_no });
-        spectatorBanner.style.display = 'block';
         return;
       } catch {
         continue;

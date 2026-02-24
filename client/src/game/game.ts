@@ -13,6 +13,11 @@ import { ShopUI } from '../ui/shop.js';
 import { InspectUI } from '../ui/inspect.js';
 import { BuildingInfoUI } from '../ui/building-info.js';
 import { getFrameworkStyle } from '../ui/framework-colors.js';
+import { SpectatorSidebar } from '../ui/spectator-sidebar.js';
+import { SpectatorTimeline } from '../ui/spectator-timeline.js';
+import { ActivityModal } from '../ui/activity-modal.js';
+import { ConversationModal } from '../ui/conversation-modal.js';
+import type { ReplayClient } from '../network/replay-client.js';
 
 export class Game {
   private app!: Application;
@@ -30,6 +35,14 @@ export class Game {
   private shopUI!: ShopUI;
   private inspectUI!: InspectUI;
   private buildingInfoUI!: BuildingInfoUI;
+
+  // Spectator UI components
+  private sidebar: SpectatorSidebar | null = null;
+  private timeline: SpectatorTimeline | null = null;
+  private activityModal: ActivityModal | null = null;
+  private conversationModal: ConversationModal | null = null;
+  private replayClient: ReplayClient | null = null;
+  private viewportResizeObserver: ResizeObserver | null = null;
 
   // State
   private selfId = '';
@@ -382,9 +395,207 @@ export class Game {
     }
   }
 
+  /** Activate the spectator layout: move canvas into viewport, set up sidebar/timeline/modals */
+  private activateSpectatorLayout(): void {
+    const layout = document.getElementById('spectator-layout')!;
+    const viewport = document.getElementById('spec-viewport')!;
+    const landing = document.getElementById('landing');
+    const activityFeed = document.getElementById('activity-feed');
+
+    // Hide landing and activity feed
+    if (landing) landing.style.display = 'none';
+    if (activityFeed) activityFeed.style.display = 'none';
+
+    // Show layout
+    layout.classList.add('active');
+
+    // Move PixiJS canvas into the viewport
+    viewport.insertBefore(this.app.canvas, viewport.firstChild);
+
+    // Resize PixiJS to fit the viewport container
+    const resizeToViewport = () => {
+      const w = viewport.clientWidth;
+      const h = viewport.clientHeight;
+      if (w > 0 && h > 0) {
+        this.app.renderer.resize(w, h);
+        this.camera.setScreenSize(w, h);
+      }
+    };
+
+    this.viewportResizeObserver = new ResizeObserver(resizeToViewport);
+    this.viewportResizeObserver.observe(viewport);
+    // Initial resize
+    resizeToViewport();
+
+    // Create spectator UI components
+    this.sidebar = new SpectatorSidebar(document.getElementById('spec-sidebar')!);
+    this.sidebar.onAgentClick = (agentId: string) => {
+      if (agentId === this.selfId) {
+        this.recentre();
+      } else {
+        const target = this.lastVisible.find(v => v.type === 'resident' && v.id === agentId);
+        if (target && target.type === 'resident') {
+          this.followResident(agentId, target.name, target.agent_framework ?? null);
+        }
+      }
+    };
+
+    this.timeline = new SpectatorTimeline(document.getElementById('spec-bottom')!);
+    this.activityModal = new ActivityModal();
+    this.conversationModal = new ConversationModal();
+
+    // Bind re-centre button
+    const recentreBtn = document.getElementById('spec-recentre');
+    if (recentreBtn) {
+      recentreBtn.addEventListener('click', () => this.recentre());
+    }
+  }
+
+  /** Common spectator perception handler for both live and replay */
+  private handleSpectatorPerception(data: PerceptionUpdate): void {
+    this.lastPerception = data;
+    this.lastVisible = data.visible;
+    this.worldTime = data.world_time;
+    this.lastWorldTimeUpdate = performance.now();
+
+    // In spectator mode, use server position directly (no prediction)
+    this.predictedX = data.self.x;
+    this.predictedY = data.self.y;
+    this.selfX = data.self.x;
+    this.selfY = data.self.y;
+    this.selfFacing = data.self.facing;
+    this.selfAction = data.self.status;
+
+    const positions = new Map<string, { x: number; y: number }>();
+    positions.set(this.selfId, { x: this.predictedX, y: this.predictedY });
+    for (const v of data.visible) {
+      if (v.type === 'resident') {
+        positions.set(v.id, { x: v.x, y: v.y });
+      }
+    }
+    this.speechRenderer.updateResidentPositions(positions);
+
+    if (data.audible.length > 0) {
+      this.speechRenderer.addMessages(data.audible);
+    }
+
+    this.mapRenderer.setCurrentBuilding(data.self.current_building);
+
+    for (const notif of data.notifications) {
+      this.addEventFeedItem(notif);
+    }
+
+    // State-diff event detection (also feeds activity modal)
+    this.detectStateChanges(data);
+
+    // Update forageable overlays
+    const forageables = data.visible.filter((v): v is VisibleForageable => v.type === 'forageable');
+    this.updateForageableOverlays(forageables);
+
+    // Update spectator sidebar
+    if (this.sidebar) {
+      // Determine which agent we're showing data for
+      const focusedIsSelf = this.currentFollowId === this.originalFollowId;
+      let focusedData;
+
+      if (focusedIsSelf) {
+        focusedData = {
+          name: this.selfName,
+          framework: this.selfFramework,
+          needs: {
+            hunger: data.self.hunger,
+            thirst: data.self.thirst,
+            energy: data.self.energy,
+            bladder: data.self.bladder,
+            social: data.self.social,
+            health: data.self.health,
+          },
+          wallet: data.self.wallet,
+          inventory: data.self.inventory.map(i => ({ type: i.type, quantity: i.quantity })),
+          status: data.self.status,
+          current_building: data.self.current_building,
+        };
+      } else {
+        // Following a different resident — show limited info
+        const target = data.visible.find(v => v.type === 'resident' && v.id === this.currentFollowId) as VisibleResident | undefined;
+        focusedData = {
+          name: this.currentFollowName,
+          framework: this.currentFollowFramework,
+          needs: {
+            hunger: data.self.hunger,
+            thirst: data.self.thirst,
+            energy: data.self.energy,
+            bladder: data.self.bladder,
+            social: data.self.social,
+            health: data.self.health,
+          },
+          wallet: data.self.wallet,
+          inventory: data.self.inventory.map(i => ({ type: i.type, quantity: i.quantity })),
+          status: target?.action ?? 'unknown',
+          current_building: data.self.current_building,
+        };
+      }
+
+      this.sidebar.updateFocusedAgent(focusedData);
+
+      // Build agent list from visible residents + self
+      const agents = [
+        {
+          id: this.selfId,
+          name: this.selfName,
+          framework: this.selfFramework,
+          condition: data.self.health < 20 ? 'critical' : data.self.hunger < 20 || data.self.thirst < 20 ? 'struggling' : 'healthy',
+          is_dead: data.self.status === 'dead',
+        },
+        ...data.visible
+          .filter((v): v is VisibleResident => v.type === 'resident')
+          .map(v => ({
+            id: v.id,
+            name: v.name,
+            framework: v.agent_framework ?? null,
+            condition: v.condition ?? 'healthy',
+            is_dead: v.is_dead,
+          })),
+      ];
+      this.sidebar.updateAgentList(agents, this.currentFollowId);
+    }
+
+    // Update timeline time
+    this.timeline?.updateTime(data.world_time);
+
+    // Feed conversation modal
+    if (this.conversationModal && data.audible.length > 0) {
+      for (const msg of data.audible) {
+        this.conversationModal.addMessage({
+          speakerId: msg.from,
+          speakerName: msg.from_name,
+          text: msg.text,
+          volume: msg.volume,
+          toId: msg.to,
+          toName: msg.to_name,
+        });
+      }
+    }
+
+    // If following a non-original resident who is no longer visible, auto-recentre
+    if (this.currentFollowId !== this.originalFollowId) {
+      const stillVisible = data.visible.some(
+        v => v.type === 'resident' && v.id === this.currentFollowId,
+      );
+      if (!stillVisible) {
+        this.recentre();
+      }
+    }
+  }
+
   async spectate(residentId: string): Promise<void> {
     this.spectatorMode = true;
     this.input.spectatorMode = true; // Disable InputHandler key processing
+
+    // Activate spectator layout
+    this.activateSpectatorLayout();
+    this.timeline?.setMode('live');
+    this.conversationModal?.setFocusedAgentId(''); // Set later on welcome
 
     // Movement keys that should be captured for camera panning
     const movementKeys = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
@@ -403,6 +614,8 @@ export class Game {
       if (e.key === 'Escape') {
         if (this.inspectUI.isVisible()) this.inspectUI.hide();
         if (this.buildingInfoUI.isVisible()) this.buildingInfoUI.hide();
+        if (this.activityModal?.isVisible()) this.activityModal.hide();
+        if (this.conversationModal?.isVisible()) this.conversationModal.hide();
         this.input.uiOpen = false;
       }
     });
@@ -413,12 +626,6 @@ export class Game {
     window.addEventListener('blur', () => {
       this.spectatorKeys.clear();
     });
-
-    // Bind re-centre button
-    const recentreBtn = document.getElementById('spectator-recentre');
-    if (recentreBtn) {
-      recentreBtn.addEventListener('click', () => this.recentre());
-    }
 
     // Set up click-and-drag-to-scroll on canvas
     this.setupDragToScroll();
@@ -454,9 +661,8 @@ export class Game {
         this.prevInventoryCount = resident.inventory.length;
         this.prevStatus = resident.status;
 
-        // Show spectator inventory panel
-        const specInv = document.getElementById('spectator-inventory');
-        if (specInv) specInv.style.display = 'block';
+        // Set conversation modal focus
+        this.conversationModal?.setFocusedAgentId(resident.id);
 
         if (!this.mapLoaded) {
           try {
@@ -470,69 +676,11 @@ export class Game {
         }
 
         this.camera.snapTo(this.selfX, this.selfY);
-        this.updateHud(resident.needs.hunger, resident.needs.thirst, resident.needs.energy,
-          resident.needs.bladder, resident.needs.social, resident.needs.health, resident.wallet);
-
         resolve();
       };
 
       this.wsClient.onPerception = (data: PerceptionUpdate) => {
-        this.lastPerception = data;
-        this.lastVisible = data.visible;
-        this.worldTime = data.world_time;
-        this.lastWorldTimeUpdate = performance.now();
-
-        // In spectator mode, use server position directly (no prediction)
-        this.predictedX = data.self.x;
-        this.predictedY = data.self.y;
-        this.selfX = data.self.x;
-        this.selfY = data.self.y;
-        this.selfFacing = data.self.facing;
-        this.selfAction = data.self.status;
-
-        this.updateHud(
-          data.self.hunger, data.self.thirst, data.self.energy,
-          data.self.bladder, data.self.social, data.self.health, data.self.wallet,
-        );
-
-        const positions = new Map<string, { x: number; y: number }>();
-        positions.set(this.selfId, { x: this.predictedX, y: this.predictedY });
-        for (const v of data.visible) {
-          if (v.type === 'resident') {
-            positions.set(v.id, { x: v.x, y: v.y });
-          }
-        }
-        this.speechRenderer.updateResidentPositions(positions);
-
-        if (data.audible.length > 0) {
-          this.speechRenderer.addMessages(data.audible);
-        }
-
-        this.mapRenderer.setCurrentBuilding(data.self.current_building);
-
-        for (const notif of data.notifications) {
-          this.addEventFeedItem(notif);
-        }
-
-        // State-diff event detection
-        this.detectStateChanges(data);
-
-        // Update forageable overlays
-        const forageables = data.visible.filter((v): v is VisibleForageable => v.type === 'forageable');
-        this.updateForageableOverlays(forageables);
-
-        // Update spectator inventory panel
-        this.updateSpectatorInventory(data.self.inventory, data.self.wallet);
-
-        // If following a non-original resident who is no longer visible, auto-recentre
-        if (this.currentFollowId !== this.originalFollowId) {
-          const stillVisible = data.visible.some(
-            v => v.type === 'resident' && v.id === this.currentFollowId,
-          );
-          if (!stillVisible) {
-            this.recentre();
-          }
-        }
+        this.handleSpectatorPerception(data);
       };
 
       this.wsClient.onError = (_code: string, message: string) => {
@@ -541,6 +689,114 @@ export class Game {
 
       this.wsClient.connectSpectator(residentId);
     });
+  }
+
+  /** Start replay playback from bench API data */
+  async replay(apiBase: string, runId: string, modelId: string): Promise<void> {
+    // Dynamically import ReplayClient to avoid circular dependency
+    const { ReplayClient: RC } = await import('../network/replay-client.js');
+
+    this.spectatorMode = true;
+    this.input.spectatorMode = true;
+
+    // Activate spectator layout
+    this.activateSpectatorLayout();
+
+    const client = new RC(apiBase, runId, modelId);
+    this.replayClient = client;
+
+    // Set up keyboard for spectator panning
+    const movementKeys = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+    window.addEventListener('keydown', (e) => {
+      const key = e.key.toLowerCase();
+      this.spectatorKeys.add(key);
+      if (movementKeys.has(key)) e.preventDefault();
+      if (key === 'tab') { e.preventDefault(); this.cycleFollowTarget(); }
+      if (e.key === 'Escape') {
+        if (this.activityModal?.isVisible()) this.activityModal.hide();
+        if (this.conversationModal?.isVisible()) this.conversationModal.hide();
+      }
+    });
+    window.addEventListener('keyup', (e) => this.spectatorKeys.delete(e.key.toLowerCase()));
+    window.addEventListener('blur', () => this.spectatorKeys.clear());
+    this.setupDragToScroll();
+
+    // Wire welcome handler
+    client.onWelcome = async (resident: ResidentState, mapUrl: string, worldTime: number) => {
+      console.log(`[Game] Replay: ${resident.passport.preferred_name}`);
+      this.selfId = resident.id;
+      this.selfName = resident.passport.preferred_name;
+      this.selfPassport = resident.passport;
+      this.worldTime = worldTime;
+      this.lastWorldTimeUpdate = performance.now();
+      this.selfX = resident.x;
+      this.selfY = resident.y;
+      this.predictedX = resident.x;
+      this.predictedY = resident.y;
+      this.selfFacing = resident.facing;
+      this.selfSkinTone = resident.passport.skin_tone;
+      this.selfHairColor = resident.passport.hair_color;
+      this.selfFramework = resident.agent_framework ?? null;
+
+      this.originalFollowId = resident.id;
+      this.currentFollowId = resident.id;
+      this.currentFollowName = resident.passport.preferred_name;
+      this.currentFollowFramework = resident.agent_framework ?? null;
+
+      this.prevSleeping = resident.is_sleeping;
+      this.prevBuilding = resident.current_building;
+      this.prevWallet = resident.wallet;
+      this.prevInventoryCount = resident.inventory.length;
+      this.prevStatus = resident.status;
+
+      this.conversationModal?.setFocusedAgentId(resident.id);
+
+      // Load map
+      if (!this.mapLoaded) {
+        try {
+          const mapRes = await fetch(mapUrl);
+          const mapData: MapData = await mapRes.json();
+          this.mapRenderer.render(mapData);
+          this.mapLoaded = true;
+        } catch (err) {
+          console.error('[Game] Failed to load map:', err);
+        }
+      }
+
+      this.camera.snapTo(this.selfX, this.selfY);
+    };
+
+    // Wire perception handler — same as live spectator
+    client.onPerception = (data: PerceptionUpdate) => {
+      this.handleSpectatorPerception(data);
+    };
+
+    // Load data
+    await client.load();
+
+    // Configure timeline for replay mode
+    this.timeline?.setMode('replay');
+    this.timeline?.setDuration(client.totalDuration);
+    this.timeline?.setEvents(client.getEvents());
+    this.timeline?.setPlaying(client.playing);
+    this.timeline?.setSpeed(client.speed);
+
+    this.timeline!.onSeek = async (worldTime: number) => {
+      this.activityModal?.clear();
+      this.conversationModal?.clear();
+      await client.seek(worldTime);
+      this.timeline?.updateTime(client.currentTime);
+    };
+
+    this.timeline!.onPlayPause = () => {
+      if (client.playing) client.pause(); else client.play();
+      this.timeline?.setPlaying(client.playing);
+    };
+
+    this.timeline!.onSpeedChange = (speed: number) => {
+      client.setSpeed(speed);
+      this.timeline?.setSpeed(speed);
+    };
   }
 
   private update(dt: number): void {
@@ -562,6 +818,11 @@ export class Game {
       // Player mode: always follow predicted position
       this.camera.followPosition(this.predictedX, this.predictedY);
     } else {
+      // Replay: advance time
+      if (this.replayClient) {
+        this.replayClient.tick(dt);
+      }
+
       // Spectator mode: process camera panning from raw keys
       let dx = 0, dy = 0;
       if (this.spectatorKeys.has('w') || this.spectatorKeys.has('arrowup')) dy -= 1;
@@ -606,6 +867,7 @@ export class Game {
       let selfCondition: 'healthy' | 'struggling' | 'critical' = 'healthy';
       if (self.health < 20 || self.hunger <= 0 || self.thirst <= 0) selfCondition = 'critical';
       else if (self.hunger < 20 || self.thirst < 20 || self.energy < 10 || self.health < 50) selfCondition = 'struggling';
+      const selfIsUsingToilet = self.is_using_toilet;
 
       // Set follow indicator for spectator mode
       this.residentRenderer.followedResidentId = this.spectatorMode ? this.currentFollowId : null;
@@ -616,7 +878,7 @@ export class Game {
         this.selfId, this.selfName, this.predictedX, this.predictedY,
         this.selfFacing, this.selfAction,
         this.selfSkinTone, this.selfHairColor,
-        this.selfFramework, selfCondition,
+        this.selfFramework, selfCondition, selfIsUsingToilet,
       );
     }
 
@@ -882,10 +1144,20 @@ export class Game {
     }
     const dayOfMonth = dayOfYear + 1;
 
+    const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    const dayStr = `${dayOfMonth} ${Game.MONTH_NAMES[month]}`;
+
+    // Player mode clock
     const timeEl = document.getElementById('clock-time');
     const dayEl = document.getElementById('clock-day');
-    if (timeEl) timeEl.textContent = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-    if (dayEl) dayEl.textContent = `${dayOfMonth} ${Game.MONTH_NAMES[month]}`;
+    if (timeEl) timeEl.textContent = timeStr;
+    if (dayEl) dayEl.textContent = dayStr;
+
+    // Spectator mode clock overlay
+    const specTimeEl = document.getElementById('spec-clock-time');
+    const specDayEl = document.getElementById('spec-clock-day');
+    if (specTimeEl) specTimeEl.textContent = timeStr;
+    if (specDayEl) specDayEl.textContent = dayStr;
   }
 
   /** Update forageable overlays showing uses-remaining pips */
@@ -950,38 +1222,43 @@ export class Game {
   private detectStateChanges(data: PerceptionUpdate): void {
     const self = data.self;
 
+    const emit = (text: string) => {
+      this.addEventFeedItem(text);
+      this.activityModal?.addEvent(text, data.world_time);
+    };
+
     // Sleep state changes
     if (self.is_sleeping && !this.prevSleeping) {
-      this.addEventFeedItem('Fell asleep');
+      emit('Fell asleep');
     } else if (!self.is_sleeping && this.prevSleeping) {
-      this.addEventFeedItem('Woke up');
+      emit('Woke up');
     }
 
     // Building entry/exit
     if (self.current_building && self.current_building !== this.prevBuilding) {
-      this.addEventFeedItem(`Entered ${self.current_building}`);
+      emit(`Entered ${self.current_building}`);
     } else if (!self.current_building && this.prevBuilding) {
-      this.addEventFeedItem('Left building');
+      emit('Left building');
     }
 
     // Wallet changes
     if (self.wallet !== this.prevWallet) {
       const diff = self.wallet - this.prevWallet;
       const sign = diff > 0 ? '+' : '';
-      this.addEventFeedItem(`Wallet: ${QUID_SYMBOL}${this.prevWallet} → ${QUID_SYMBOL}${self.wallet} (${sign}${diff})`);
+      emit(`Wallet: ${QUID_SYMBOL}${this.prevWallet} → ${QUID_SYMBOL}${self.wallet} (${sign}${diff})`);
     }
 
     // Inventory changes
     const invCount = self.inventory.length;
     if (invCount > this.prevInventoryCount) {
-      this.addEventFeedItem('Received an item');
+      emit('Received an item');
     } else if (invCount < this.prevInventoryCount) {
-      this.addEventFeedItem('Used an item');
+      emit('Used an item');
     }
 
     // Death
     if (self.status === 'dead' && this.prevStatus !== 'dead') {
-      this.addEventFeedItem('Died');
+      emit('Died');
     }
 
     // Update previous state
@@ -1008,23 +1285,7 @@ export class Game {
     this.input.uiOpen = true;
   }
 
-  private updateSpectatorInventory(
-    inventory: InventoryItem[],
-    wallet: number,
-  ): void {
-    const el = document.getElementById('spectator-inventory');
-    if (!el) return;
-
-    let html = `<div class="spec-inv-wallet">${QUID_SYMBOL}${wallet}</div>`;
-    if (inventory.length === 0) {
-      html += '<div class="spec-inv-empty">No items</div>';
-    } else {
-      for (const item of inventory) {
-        html += `<div class="spec-inv-item">${item.type} ×${item.quantity}</div>`;
-      }
-    }
-    el.innerHTML = html;
-  }
+  // Spectator inventory is now handled by SpectatorSidebar
 
   /** Set up click-and-drag-to-scroll on the canvas (spectator mode only) */
   private setupDragToScroll(): void {
@@ -1163,32 +1424,17 @@ export class Game {
 
   /** Show/hide the re-centre button based on current state */
   private updateRecentreButton(): void {
-    const btn = document.getElementById('spectator-recentre');
+    // New spectator layout re-centre button
+    const btn = document.getElementById('spec-recentre');
     if (!btn) return;
     const showBtn = this.currentFollowId !== this.originalFollowId || this.camera.getMode() === 'free';
     btn.style.display = showBtn ? 'block' : 'none';
   }
 
-  /** Update spectator banner to reflect the currently-followed resident */
+  /** Update sidebar when follow target changes */
   private updateSpectatorBanner(): void {
-    const banner = document.getElementById('spectator-banner');
-    if (!banner) return;
-
-    const name = this.currentFollowId === this.originalFollowId
-      ? this.selfName : this.currentFollowName;
-    let html = `Spectating: ${this.escapeHtml(name)}`;
-
-    const fw = this.currentFollowId === this.originalFollowId
-      ? this.selfFramework : this.currentFollowFramework;
-    if (fw) {
-      const fwStyle = getFrameworkStyle(fw);
-      if (fwStyle) {
-        html += ` <span style="background:${fwStyle.cssColor}; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px; color: #fff;">${this.escapeHtml(fwStyle.label)}</span>`;
-      }
-    }
-
-    html += ` · <a href="/quick-start" class="spectator-cta">Connect your own bot →</a>`;
-    banner.innerHTML = html;
+    // In the new layout, the sidebar handles this via updateFocusedAgent
+    // which is called on every perception tick. Nothing extra needed here.
   }
 
   private escapeHtml(text: string): string {

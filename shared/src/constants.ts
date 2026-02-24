@@ -50,6 +50,7 @@ export const ENERGY_COST_SHOUT = 0.15;
 export const ENERGY_COST_EAT = 0.1;
 export const ENERGY_COST_DRINK = 0.1;
 export const ENERGY_COST_USE_TOILET = 0.05;
+export const TOILET_USE_DURATION_MS = 3000;
 export const ENERGY_COST_WORK_TICK = 3.0;       // work is now the main energy drain
 export const ENERGY_COST_WRITE_PETITION = 0;    // was 1.0 — free petitions (Phase 1)
 export const ENERGY_COST_VOTE = 0;              // was 0.3 — free voting (Phase 1)

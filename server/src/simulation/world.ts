@@ -29,6 +29,7 @@ import {
   SPEECH_TURN_TIMEOUT_MS, SPEECH_TTL_TICKS,
   AGENT_SEPARATION_DIST, AGENT_SEPARATION_FORCE,
   BLADDER_ACCIDENT_FEE, SOCIAL_ONESIDED_RECOVERY_PER_SEC,
+  ENERGY_COST_USE_TOILET,
 } from '@otra/shared';
 import type { WebSocket } from 'ws';
 import { TileMap } from './map.js';
@@ -126,6 +127,9 @@ export interface ResidentEntity {
   loiterTimer: number;
   // Sleep tracking (runtime only)
   sleepStartedAt: number;  // real-time ms when sleep started (0 if not sleeping)
+  // Timed toilet action (runtime only)
+  toiletUseStartedMs: number | null;
+  toiletUseUntilMs: number | null;
   // Webhook throttle tracking (runtime only)
   lastNeedsWarning: { hunger: number; thirst: number; energy: number; bladder: number; social: number };
   lastNearbyResidentAlert: Map<string, number>;  // resident_id → last alert timestamp
@@ -334,6 +338,8 @@ export class World {
       loiterY: row.y,
       loiterTimer: 0,
       sleepStartedAt: row.is_sleeping === 1 ? Date.now() : 0,
+      toiletUseStartedMs: null,
+      toiletUseUntilMs: null,
       lastNeedsWarning: { hunger: 0, thirst: 0, energy: 0, bladder: 0, social: 0 },
       lastNearbyResidentAlert: new Map(),
       lastBuildingNearbyAlert: new Map(),
@@ -384,7 +390,7 @@ export class World {
   updatePositions(dt: number): void {
     // Path-following pre-pass: steer residents along active paths
     for (const [, r] of this.residents) {
-      if (r.isDead || r.isSleeping || r.arrestedBy || r.prisonSentenceEnd || !r.pathWaypoints) continue;
+      if (r.isDead || r.isSleeping || r.toiletUseUntilMs !== null || r.arrestedBy || r.prisonSentenceEnd || !r.pathWaypoints) continue;
 
       // Cancel path if out of energy
       if (r.needs.energy <= 0) {
@@ -449,7 +455,7 @@ export class World {
     }
 
     for (const [, r] of this.residents) {
-      if (r.isDead || r.isSleeping || r.arrestedBy || r.prisonSentenceEnd) continue;
+      if (r.isDead || r.isSleeping || r.toiletUseUntilMs !== null || r.arrestedBy || r.prisonSentenceEnd) continue;
       if (r.velocityX === 0 && r.velocityY === 0) continue;
 
       const newX = r.x + r.velocityX * dt;
@@ -480,6 +486,21 @@ export class World {
       } else if (r.pathWaypoints) {
         r.pathBlockedTicks = 0;
       }
+    }
+  }
+
+  /** Timed toilet usage completion */
+  updateToiletUsage(): void {
+    const now = Date.now();
+    for (const [, r] of this.residents) {
+      if (r.toiletUseUntilMs === null) continue;
+      if (now < r.toiletUseUntilMs) continue;
+
+      r.needs.energy = Math.max(0, r.needs.energy - ENERGY_COST_USE_TOILET);
+      r.needs.bladder = 0;
+      r.toiletUseStartedMs = null;
+      r.toiletUseUntilMs = null;
+      r.pendingNotifications.push('Used the toilet. Bladder emptied.');
     }
   }
 
@@ -1353,6 +1374,10 @@ export class World {
           status: resident.arrestedBy ? 'arrested' : 'imprisoned',
           is_sleeping: false,
           sleep_started_at: null,
+          is_using_toilet: resident.toiletUseUntilMs !== null,
+          toilet_use_remaining_ms: resident.toiletUseUntilMs !== null
+            ? Math.max(0, resident.toiletUseUntilMs - Date.now())
+            : undefined,
           current_building: resident.currentBuilding,
           employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
           law_breaking: resident.lawBreaking,
@@ -1373,18 +1398,21 @@ export class World {
     }
 
     // Always available actions
-    interactions.push('speak', 'inspect');
-    if (!resident.isSleeping && resident.needs.energy > 0) {
-      interactions.push('move', 'move_to');
-    }
-    if (resident.needs.energy < 90 && !resident.isSleeping) {
-      interactions.push('sleep');
-    }
-    if (resident.isSleeping) {
-      interactions.push('wake');
-    }
-    if (resident.employment) {
-      interactions.push('quit_job');
+    interactions.push('inspect');
+    if (resident.toiletUseUntilMs === null) {
+      interactions.push('speak');
+      if (!resident.isSleeping && resident.needs.energy > 0) {
+        interactions.push('move', 'move_to');
+      }
+      if (resident.needs.energy < 90 && !resident.isSleeping) {
+        interactions.push('sleep');
+      }
+      if (resident.isSleeping) {
+        interactions.push('wake');
+      }
+      if (resident.employment) {
+        interactions.push('quit_job');
+      }
     }
 
     // Include own pending speech in audible (distance 0)
@@ -1455,6 +1483,7 @@ export class World {
           is_wanted: other.lawBreaking.length > 0 ? true : undefined,
           is_police: other.currentJobId === 'police-officer' ? true : undefined,
           is_arrested: (other.arrestedBy || other.prisonSentenceEnd) ? true : undefined,
+          is_using_toilet: other.toiletUseUntilMs !== null ? true : undefined,
         } satisfies VisibleResident);
 
         // Body collection interaction: can pick up dead residents
@@ -1507,7 +1536,7 @@ export class World {
     }
 
     // Inventory actions: eat/drink available if resident has consumables
-    if (!resident.isSleeping) {
+    if (!resident.isSleeping && resident.toiletUseUntilMs === null) {
       for (const item of resident.inventory) {
         const itemDef = getShopItem(item.type);
         if (itemDef && (itemDef.item_kind === 'consumable' || itemDef.item_kind === 'resource')) {
@@ -1518,7 +1547,7 @@ export class World {
     }
 
     // If inside a building, add building-specific interactions
-    if (resident.currentBuilding) {
+    if (resident.currentBuilding && resident.toiletUseUntilMs === null) {
       interactions.push('exit_building');
       const currentBldg = this.map.data.buildings.find(b => b.id === resident.currentBuilding);
       if (currentBldg) {
@@ -1628,6 +1657,10 @@ export class World {
         status: resident.isDead ? 'dead' : resident.isSleeping ? 'sleeping' : resident.speed !== 'stop' ? 'walking' : 'idle',
         is_sleeping: resident.isSleeping,
         sleep_started_at: resident.isSleeping ? resident.sleepStartedAt : null,
+        is_using_toilet: resident.toiletUseUntilMs !== null,
+        toilet_use_remaining_ms: resident.toiletUseUntilMs !== null
+          ? Math.max(0, resident.toiletUseUntilMs - Date.now())
+          : undefined,
         current_building: resident.currentBuilding,
         employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
         law_breaking: resident.lawBreaking,
@@ -1701,6 +1734,7 @@ export class World {
         is_wanted: other.lawBreaking.length > 0 ? true : undefined,
         is_police: other.currentJobId === 'police-officer' ? true : undefined,
         is_arrested: (other.arrestedBy || other.prisonSentenceEnd) ? true : undefined,
+        is_using_toilet: other.toiletUseUntilMs !== null ? true : undefined,
       } satisfies VisibleResident);
 
       // Include ALL pending speech (no distance/wall filtering)
@@ -1788,6 +1822,10 @@ export class World {
         status: resident.isDead ? 'dead' : resident.isSleeping ? 'sleeping' : resident.speed !== 'stop' ? 'walking' : 'idle',
         is_sleeping: resident.isSleeping,
         sleep_started_at: resident.isSleeping ? resident.sleepStartedAt : null,
+        is_using_toilet: resident.toiletUseUntilMs !== null,
+        toilet_use_remaining_ms: resident.toiletUseUntilMs !== null
+          ? Math.max(0, resident.toiletUseUntilMs - Date.now())
+          : undefined,
         current_building: resident.currentBuilding,
         employment: resident.employment ? { job: resident.employment.job, on_shift: resident.employment.onShift } : null,
         law_breaking: resident.lawBreaking,

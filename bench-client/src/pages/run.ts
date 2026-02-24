@@ -100,12 +100,12 @@ function buildResultsSection(run: RunDetail): string {
   `;
 
   // Per-agent detail cards
-  const cards = agents.map(a => buildAgentCard(a)).join('');
+  const cards = agents.map(a => buildAgentCard(a, run.run_id)).join('');
 
   return `${table}${cards}`;
 }
 
-function buildAgentCard(agent: AgentResult): string {
+function buildAgentCard(agent: AgentResult, runId: string): string {
   const s = agent.sub_scores;
   const d = agent.details;
 
@@ -146,6 +146,10 @@ function buildAgentCard(agent: AgentResult): string {
     </div>
   `).join('');
 
+  // Replay link: opens otra.city with replay params pointing at the bench API
+  const benchApiBase = window.location.origin;
+  const replayUrl = `https://otra.city/?replay=${esc(runId)}&model=${esc(agent.model_id)}&api=${encodeURIComponent(benchApiBase)}`;
+
   return `
     <div class="section">
       <div class="section-header">${esc(agent.display_name)}</div>
@@ -155,6 +159,7 @@ function buildAgentCard(agent: AgentResult): string {
         <span class="${agent.details.survived_full_run ? 'status-alive' : 'status-dead'}">
           ${agent.details.survived_full_run ? 'Survived' : 'Dead'}
         </span>
+        <a href="${replayUrl}" target="_blank" class="btn btn-outline" style="margin-left: auto; font-size: 0.8rem;">Replay</a>
       </div>
       <div class="sub-scores">${subHtml}</div>
       <div style="margin-top: 1.25rem;">

@@ -92,6 +92,18 @@ export class Orchestrator {
     }
     const status = await res.json() as { status: string; alive: number; worldTime: number };
     console.log(`[Orchestrator] Instance OK — ${status.alive} alive residents, world_time=${status.worldTime}`);
+
+    // Save map for replay use
+    try {
+      const mapRes = await fetch(`${this.manifest.otra_city_instance}/api/map`);
+      if (mapRes.ok) {
+        const mapData = await mapRes.text();
+        writeFileSync(join(this.dataDir, 'map.json'), mapData);
+        console.log(`[Orchestrator] Saved map.json to run directory`);
+      }
+    } catch (err) {
+      console.warn('[Orchestrator] Failed to save map:', err instanceof Error ? err.message : err);
+    }
   }
 
   private async registerAllAgents(): Promise<void> {

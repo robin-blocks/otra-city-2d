@@ -1,4 +1,4 @@
-import { TILE_SIZE, ENERGY_COST_USE_TOILET, REFERRAL_REWARD, REFERRAL_MATURITY_MS, AGENT_SEPARATION_DIST, CITY_CONFIG, renderMessage } from '@otra/shared';
+import { TILE_SIZE, ENERGY_COST_USE_TOILET, TOILET_USE_DURATION_MS, REFERRAL_REWARD, REFERRAL_MATURITY_MS, AGENT_SEPARATION_DIST, CITY_CONFIG, renderMessage } from '@otra/shared';
 import type { ResidentEntity } from '../simulation/world.js';
 import type { World } from '../simulation/world.js';
 import { getShopCatalogWithStock } from '../economy/shop.js';
@@ -163,12 +163,19 @@ export function useToilet(resident: ResidentEntity): BuildingActionResult {
   if (resident.isSleeping) {
     return { success: false, message: 'Cannot use toilet while sleeping' };
   }
+  if (resident.toiletUseUntilMs !== null) {
+    return { success: false, message: 'Already using toilet' };
+  }
   if (resident.needs.energy < ENERGY_COST_USE_TOILET) {
     return { success: false, message: 'Not enough energy' };
   }
 
-  resident.needs.energy -= ENERGY_COST_USE_TOILET;
-  resident.needs.bladder = 0;
+  const now = Date.now();
+  resident.toiletUseStartedMs = now;
+  resident.toiletUseUntilMs = now + TOILET_USE_DURATION_MS;
+  resident.velocityX = 0;
+  resident.velocityY = 0;
+  resident.speed = 'stop';
 
-  return { success: true, message: 'Used the toilet. Bladder emptied.' };
+  return { success: true, message: 'Using toilet...' };
 }

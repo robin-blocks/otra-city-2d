@@ -72,4 +72,5 @@ export interface VisibleResident {
   is_wanted?: boolean;       // currently breaking a law
   is_police?: boolean;       // employed as police officer
   is_arrested?: boolean;     // arrested or imprisoned
+  is_using_toilet?: boolean; // currently performing timed toilet action
 }

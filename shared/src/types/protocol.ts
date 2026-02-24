@@ -58,6 +58,8 @@ export interface PerceptionUpdate {
     status: string;
     is_sleeping: boolean;
     sleep_started_at: number | null;  // real-time ms when sleep began, null if not sleeping
+    is_using_toilet: boolean;
+    toilet_use_remaining_ms?: number;
     current_building: string | null;
     employment: { job: string; on_shift: boolean } | null;
     law_breaking: string[];

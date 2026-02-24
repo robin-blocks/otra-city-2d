@@ -1402,6 +1402,15 @@ export class WsServer {
       }
     }
 
+    // Timed toilet usage blocks all actions except inspect and submit_feedback.
+    // Completion is handled in the simulation loop.
+    if (resident.toiletUseUntilMs !== null) {
+      if (msg.type !== 'inspect' && msg.type !== 'submit_feedback') {
+        this.sendActionResult(resident, msg, false, 'using_toilet');
+        return;
+      }
+    }
+
     if (this.handleMovementAndSpeechActions(resident, msg)) return;
     if (this.handleEconomyActions(resident, msg)) return;
     if (this.handleTourismAndFeedbackActions(resident, msg)) return;

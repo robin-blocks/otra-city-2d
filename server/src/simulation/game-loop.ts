@@ -56,6 +56,7 @@ export class GameLoop {
     // Simulation ticks (10 Hz) — needs, economy, deaths, foraging
     while (this.simAccumulator >= this.SIM_STEP) {
       const dt = this.SIM_STEP / 1000;
+      this.world.updateToiletUsage();
       this.world.updateNeeds(dt);
       this.world.applySeparation(dt);
       this.world.updateLawEnforcement(dt);
